@@ -15,6 +15,8 @@ type Config struct {
 	Registries   []Registry         `toml:"registry"`
 	Toolchain    Toolchain          `toml:"toolchain"`
 	Legacy       *Legacy            `toml:"legacy"`
+	Workspace    *Workspace         `toml:"workspace"`
+	Hooks        *Hooks             `toml:"hooks"`
 }
 
 type Package struct {
@@ -61,9 +63,20 @@ type Toolchain struct {
 }
 
 type Legacy struct {
-	Type       string   `toml:"type"`
-	Root       string   `toml:"root"`
-	ExtraArgs  []string `toml:"extra_args"`
+	Type      string   `toml:"type"`
+	Root      string   `toml:"root"`
+	ExtraArgs []string `toml:"extra_args"`
+}
+
+type Workspace struct {
+	Members []string `toml:"members"`
+}
+
+type Hooks struct {
+	PreBuild    string `toml:"pre-build"`
+	PostBuild   string `toml:"post-build"`
+	PrePublish  string `toml:"pre-publish"`
+	PostPublish string `toml:"post-publish"`
 }
 
 func Load(path string) (*Config, error) {

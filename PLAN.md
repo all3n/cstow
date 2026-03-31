@@ -256,7 +256,7 @@ url      = "https://pub-xxx.r2.dev/..."   # 可选 CDN 直链
 
 ---
 
-## Phase 5 — ABI 管理 + 多 triplet
+## Phase 5 — ABI 管理 + 多 triplet ✅ DONE
 
 这是 C++ 工具链最复杂的部分，cstow 通过 **ABI Tag** 统一描述。
 
@@ -305,7 +305,7 @@ func Compatible(have, need ABITag) bool {
 
 ---
 
-## Phase 6 — CMake / Make 老项目一键集成
+## Phase 6 — CMake / Make 老项目一键集成 ✅ DONE
 
 **目标**：存量项目零修改接入 cstow 依赖管理。
 

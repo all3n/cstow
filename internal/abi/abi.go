@@ -38,8 +38,8 @@ func (t ABITag) String() string {
 // Parse deserializes an ABI tag string
 func Parse(s string) (ABITag, error) {
 	parts := strings.Split(s, "-")
-	if len(parts) < 6 {
-		return ABITag{}, fmt.Errorf("invalid ABI tag: %s (need at least 6 components)", s)
+	if len(parts) < 5 {
+		return ABITag{}, fmt.Errorf("invalid ABI tag: %s (need at least 5 components)", s)
 	}
 
 	// Parse compiler+version (e.g. "gcc13")

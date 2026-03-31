@@ -5,8 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
+	"github.com/all3n/cstow/internal/abi"
 	"github.com/all3n/cstow/internal/config"
+	"github.com/all3n/cstow/internal/hooks"
 	"github.com/all3n/cstow/internal/toolchain"
 	"github.com/spf13/cobra"
 )
@@ -39,7 +42,18 @@ var buildCmd = &cobra.Command{
 			return fmt.Errorf("detect toolchain: %w", err)
 		}
 
+		// Detect ABI tag
+		abiTag := abi.DetectFromToolchain(tc.Kind, tc.Version, cfg.Package.Std)
+
 		fmt.Printf(">> toolchain: %s %d.%d.%d (%s)\n", tc.Kind, tc.Version[0], tc.Version[1], tc.Version[2], tc.Target)
+		fmt.Printf(">> abi: %s\n", abiTag.String())
+
+		// Run pre-build hook
+		dir, _ := os.Getwd()
+		hr := hooks.New(cfg.Hooks, dir)
+		if err := hr.Run("pre-build"); err != nil {
+			return err
+		}
 
 		buildDir := filepath.Join("build", profile)
 		if err := os.MkdirAll(buildDir, 0o755); err != nil {
@@ -51,12 +65,37 @@ var buildCmd = &cobra.Command{
 			cmakeType = "Release"
 		}
 
+		// Determine source directory (legacy projects may have custom root)
+		sourceDir := "."
+		if cfg.Legacy != nil && cfg.Legacy.Root != "" {
+			sourceDir = cfg.Legacy.Root
+		}
+
 		cmakeArgs := []string{
-			"-S", ".",
+			"-S", sourceDir,
 			"-B", buildDir,
 			fmt.Sprintf("-DCMAKE_BUILD_TYPE=%s", cmakeType),
 		}
 		cmakeArgs = append(cmakeArgs, tc.CMakeFlags()...)
+
+		// Inject dependency paths from cstow_deps
+		depsDir := filepath.Join(".", "cstow_deps")
+		if entries, err := os.ReadDir(depsDir); err == nil && len(entries) > 0 {
+			var paths []string
+			for _, e := range entries {
+				if e.IsDir() || e.Type()&os.ModeSymlink != 0 {
+					paths = append(paths, filepath.Join(depsDir, e.Name()))
+				}
+			}
+			if len(paths) > 0 {
+				cmakeArgs = append(cmakeArgs, fmt.Sprintf("-DCMAKE_PREFIX_PATH=%s", strings.Join(paths, ";")))
+			}
+		}
+
+		// Add legacy extra args
+		if cfg.Legacy != nil && len(cfg.Legacy.ExtraArgs) > 0 {
+			cmakeArgs = append(cmakeArgs, cfg.Legacy.ExtraArgs...)
+		}
 
 		fmt.Printf(">> cmake configure (%s)\n", profile)
 		cmakeCmd := exec.Command("cmake", cmakeArgs...)
