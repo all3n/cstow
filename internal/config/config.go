@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/BurntSushi/toml"
 )
@@ -103,4 +104,145 @@ func (c *Config) Save(path string) error {
 		return fmt.Errorf("write config: %w", err)
 	}
 	return nil
+}
+
+// Global is the user-level configuration stored at ~/.cstow/config.toml.
+type Global struct {
+	Defaults     GlobalDefaults `toml:"defaults"`
+	Cache        GlobalCache    `toml:"cache"`
+	Repositories []RepoSource   `toml:"repositories"`
+	Registries   []Registry     `toml:"registry"`
+	Toolchain    GlobalToolchain `toml:"toolchain"`
+	Build        GlobalBuild    `toml:"build"`
+	Network      GlobalNetwork  `toml:"network"`
+}
+
+type GlobalDefaults struct {
+	Std     string `toml:"std"`
+	Profile string `toml:"profile"`
+	Jobs    int    `toml:"jobs"`
+	Color   bool   `toml:"color"`
+}
+
+type GlobalCache struct {
+	Dir           string `toml:"dir"`
+	MaxSizeGB     int    `toml:"max_size_gb"`
+	RetentionDays int    `toml:"retention_days"`
+}
+
+type RepoSource struct {
+	Name       string `toml:"name"`
+	Path       string `toml:"path"`
+	Git        string `toml:"git"`
+	Branch     string `toml:"branch"`
+	AutoUpdate bool   `toml:"auto_update"`
+	Archive    string `toml:"archive"`
+	Priority   int    `toml:"priority"`
+}
+
+type GlobalToolchain struct {
+	Prefer    string `toml:"prefer"`
+	MinGCC    string `toml:"min_gcc"`
+	MinClang  string `toml:"min_clang"`
+}
+
+type GlobalBuild struct {
+	Flags GlobalBuildFlags `toml:"flags"`
+}
+
+type GlobalBuildFlags struct {
+	CXXFlags  []string `toml:"cxx_flags"`
+	LinkFlags []string `toml:"link_flags"`
+	Defines   []string `toml:"defines"`
+}
+
+type GlobalNetwork struct {
+	Proxy     string   `toml:"proxy"`
+	NoProxy   []string `toml:"no_proxy"`
+	Timeout   int      `toml:"timeout_sec"`
+	Retries   int      `toml:"retries"`
+}
+
+// LoadGlobal reads ~/.cstow/config.toml. Returns a zero-value Global with
+// sensible defaults if the file does not exist.
+func LoadGlobal() (*Global, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("home dir: %w", err)
+	}
+	path := filepath.Join(home, ".cstow", "config.toml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			g := defaultGlobal()
+			return g, nil
+		}
+		return nil, fmt.Errorf("read global config: %w", err)
+	}
+	var g Global
+	if err := toml.Unmarshal(data, &g); err != nil {
+		return nil, fmt.Errorf("parse global config: %w", err)
+	}
+	applyDefaults(&g)
+	return &g, nil
+}
+
+func defaultGlobal() *Global {
+	g := &Global{
+		Defaults: GlobalDefaults{Std: "c++17", Profile: "debug"},
+		Cache:    GlobalCache{Dir: "~/.cstow/cache"},
+	}
+	return g
+}
+
+func applyDefaults(g *Global) {
+	if g.Defaults.Std == "" {
+		g.Defaults.Std = "c++17"
+	}
+	if g.Defaults.Profile == "" {
+		g.Defaults.Profile = "debug"
+	}
+	if g.Cache.Dir == "" {
+		g.Cache.Dir = "~/.cstow/cache"
+	}
+}
+
+// RepositoryPaths returns ordered directory paths for Finder, expanding ~ and
+// sorting by Priority (lower = higher priority). The built-in
+// ~/.cstow/repository/ is always appended last as a fallback.
+func (g *Global) RepositoryPaths() []string {
+	home, _ := os.UserHomeDir()
+
+	sorted := make([]RepoSource, len(g.Repositories))
+	copy(sorted, g.Repositories)
+	// stable sort by priority (default 50), lower first
+	for i := 1; i < len(sorted); i++ {
+		for j := i; j > 0; j-- {
+			pj := sorted[j].Priority
+			pj1 := sorted[j-1].Priority
+			if pj == 0 {
+				pj = 50
+			}
+			if pj1 == 0 {
+				pj1 = 50
+			}
+			if pj < pj1 {
+				sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
+			}
+		}
+	}
+
+	paths := make([]string, 0, len(sorted)+1)
+	for _, r := range sorted {
+		if r.Path != "" {
+			p := r.Path
+			if len(p) >= 2 && p[:2] == "~/" {
+				p = filepath.Join(home, p[2:])
+			}
+			paths = append(paths, p)
+		}
+	}
+	// built-in fallback
+	paths = append(paths, filepath.Join(home, ".cstow", "repository"))
+	return paths
 }

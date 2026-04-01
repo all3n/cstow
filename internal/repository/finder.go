@@ -9,6 +9,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/Masterminds/semver/v3"
+	"github.com/all3n/cstow/internal/config"
 )
 
 // Finder searches ordered repository directories for package definitions.
@@ -16,10 +17,14 @@ type Finder struct {
 	searchPaths []string
 }
 
-// NewFinder returns a Finder using ~/.cstow/repository/ as the single search path.
-func NewFinder() *Finder {
-	home, _ := os.UserHomeDir()
-	return &Finder{searchPaths: []string{filepath.Join(home, ".cstow", "repository")}}
+// NewFinder loads ~/.cstow/config.toml and builds search paths from it.
+// Falls back to ~/.cstow/repository/ if config is missing.
+func NewFinder() (*Finder, error) {
+	g, err := config.LoadGlobal()
+	if err != nil {
+		return nil, fmt.Errorf("load global config: %w", err)
+	}
+	return &Finder{searchPaths: g.RepositoryPaths()}, nil
 }
 
 // NewFinderWithPaths returns a Finder with explicit search paths (used in tests).
