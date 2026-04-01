@@ -38,22 +38,26 @@ type BuildDef struct {
 type CMakeBuildDef struct {
 	Defines        []string `toml:"defines"`
 	CXXFlags       []string `toml:"cxx_flags"`
+	LinkFlags      []string `toml:"link_flags"`
 	InstallTargets []string `toml:"install_targets"`
 }
 
 type ProfileOverride struct {
-	Defines  []string `toml:"defines"`
-	CXXFlags []string `toml:"cxx_flags"`
+	Defines   []string `toml:"defines"`
+	CXXFlags  []string `toml:"cxx_flags"`
+	LinkFlags []string `toml:"link_flags"`
 }
 
 type CompilerOverride struct {
-	Defines  []string `toml:"defines"`
-	CXXFlags []string `toml:"cxx_flags"`
+	Defines   []string `toml:"defines"`
+	CXXFlags  []string `toml:"cxx_flags"`
+	LinkFlags []string `toml:"link_flags"`
 }
 
 type PlatformOverride struct {
-	Defines  []string `toml:"defines"`
-	CXXFlags []string `toml:"cxx_flags"`
+	Defines   []string `toml:"defines"`
+	CXXFlags  []string `toml:"cxx_flags"`
+	LinkFlags []string `toml:"link_flags"`
 }
 
 type ArtifactsDef struct {
