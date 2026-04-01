@@ -1,0 +1,1 @@
+- [Codebase Review 2026-03-31](codebase-review-2026-03-31.md) — Full codebase audit: compiles clean, tests pass, but has path traversal bug in pack.go and file descriptor leak in CreateTarZst

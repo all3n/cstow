@@ -11,6 +11,7 @@ type MergedBuildConfig struct {
 	IncludeDirs  []string
 	Libs         []string
 	Patch        string
+	BuildType    string // static, shared, header-only
 }
 
 // Merge applies configuration layers in priority order (lowest → highest):
@@ -24,6 +25,12 @@ func Merge(pkg *PackageDef, ver *VersionOverride, toolchainKind, profile, goos s
 		System:      pkg.Build.System,
 		IncludeDirs: slices.Clone(pkg.Artifacts.IncludeDirs),
 		Libs:        slices.Clone(pkg.Artifacts.Libs),
+		BuildType:   pkg.Build.Type,
+	}
+
+	// Version override can change build type
+	if ver != nil && ver.Build != nil && ver.Build.Type != "" {
+		out.BuildType = ver.Build.Type
 	}
 
 	// Layer 1: package base

@@ -21,6 +21,7 @@ var installCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		profile, _ := cmd.Flags().GetString("profile")
 		force, _ := cmd.Flags().GetBool("force")
+		buildType, _ := cmd.Flags().GetString("type")
 
 		if !builder.IsCmakeInstalled() {
 			return fmt.Errorf("cmake not found on PATH — install cmake first")
@@ -68,6 +69,14 @@ var installCmd = &cobra.Command{
 		// 4. Merge build config
 		merged := repository.Merge(pkg.Def, pkg.Override, tc.Kind, profile, runtime.GOOS)
 
+		// CLI --type overrides the package-defined build type
+		if buildType != "" {
+			merged.BuildType = buildType
+		}
+		if merged.BuildType == "" {
+			merged.BuildType = "static" // default
+		}
+
 		// 5. Fetch source
 		fmt.Printf(">> fetching source: %s\n", pkg.Def.Source.URL)
 		tmpDir, err := os.MkdirTemp("", "cstow-build-*")
@@ -105,5 +114,6 @@ var installCmd = &cobra.Command{
 func init() {
 	installCmd.Flags().StringP("profile", "p", "debug", "build profile (debug|release)")
 	installCmd.Flags().Bool("force", false, "rebuild even if already cached")
+	installCmd.Flags().String("type", "", "build type: static|shared|header-only (overrides package default)")
 	rootCmd.AddCommand(installCmd)
 }

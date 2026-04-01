@@ -114,6 +114,59 @@ func TestMerge_VersionOverrideCompilerAppends(t *testing.T) {
 	assert.Equal(t, []string{"-Wno-old", "-Wno-new"}, got.CXXFlags)
 }
 
+func TestMerge_BuildTypePropagation(t *testing.T) {
+	t.Run("from package base", func(t *testing.T) {
+		pkg := &PackageDef{
+			Build: BuildDef{
+				System: "cmake",
+				Type:   "shared",
+				CMake:  CMakeBuildDef{Defines: []string{"BASE=1"}},
+			},
+		}
+		got := Merge(pkg, nil, "gcc", "debug", "linux")
+		assert.Equal(t, "shared", got.BuildType)
+	})
+
+	t.Run("version override replaces", func(t *testing.T) {
+		pkg := &PackageDef{
+			Build: BuildDef{
+				System: "cmake",
+				Type:   "static",
+				CMake:  CMakeBuildDef{Defines: []string{"BASE=1"}},
+			},
+		}
+		ver := &VersionOverride{
+			Build: &BuildOverride{
+				Type: "shared",
+			},
+		}
+		got := Merge(pkg, ver, "gcc", "debug", "linux")
+		assert.Equal(t, "shared", got.BuildType)
+	})
+
+	t.Run("header-only from package", func(t *testing.T) {
+		pkg := &PackageDef{
+			Build: BuildDef{
+				System: "cmake",
+				Type:   "header-only",
+			},
+		}
+		got := Merge(pkg, nil, "gcc", "debug", "linux")
+		assert.Equal(t, "header-only", got.BuildType)
+	})
+
+	t.Run("empty defaults empty", func(t *testing.T) {
+		pkg := &PackageDef{
+			Build: BuildDef{
+				System: "cmake",
+				CMake:  CMakeBuildDef{Defines: []string{"BASE=1"}},
+			},
+		}
+		got := Merge(pkg, nil, "gcc", "debug", "linux")
+		assert.Equal(t, "", got.BuildType)
+	})
+}
+
 func TestMerge_AllLayers(t *testing.T) {
 	goos := "linux"
 	if runtime.GOOS == "windows" {

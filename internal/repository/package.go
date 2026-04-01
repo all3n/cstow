@@ -77,6 +77,7 @@ type SourceOverride struct {
 }
 
 type BuildOverride struct {
+	Type     string                      `toml:"type"`     // static|shared|header-only (overrides package base)
 	CMake    *CMakeBuildDef              `toml:"cmake"`
 	Compiler map[string]CompilerOverride `toml:"compiler"`
 }

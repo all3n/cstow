@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 
 	"github.com/all3n/cstow/internal/repository"
 	"github.com/all3n/cstow/internal/toolchain"
@@ -15,12 +14,12 @@ import (
 
 // Options holds all inputs for building a package from source.
 type Options struct {
-	SourcePath string                       // path to fetched source root
-	InstallDir string                       // CMAKE_INSTALL_PREFIX target
-	Config     *repository.MergedBuildConfig // merged cmake defines, flags, etc.
-	Toolchain  *toolchain.Toolchain         // detected compiler info
-	Profile    string                       // "debug" or "release"
-	Jobs       int                          // parallel build jobs, 0 = auto
+	SourcePath string
+	InstallDir string
+	Config     *repository.MergedBuildConfig
+	Toolchain  *toolchain.Toolchain
+	Profile    string
+	Jobs       int
 	Stdout     io.Writer
 	Stderr     io.Writer
 }
@@ -30,7 +29,8 @@ type Result struct {
 	InstallDir string
 }
 
-// Build runs cmake configure → build → install.
+// Build runs cmake configure -> build -> install.
+// For header-only libraries, skips cmake entirely and copies headers.
 func Build(opts Options) (*Result, error) {
 	if opts.Stdout == nil {
 		opts.Stdout = os.Stdout
@@ -40,6 +40,11 @@ func Build(opts Options) (*Result, error) {
 	}
 	if opts.Jobs <= 0 {
 		opts.Jobs = runtime.NumCPU()
+	}
+
+	// header-only: skip cmake, just copy include dirs
+	if opts.Config.BuildType == "header-only" {
+		return installHeaderOnly(opts)
 	}
 
 	buildDir := filepath.Join(opts.SourcePath, ".cstow-build")
@@ -52,7 +57,7 @@ func Build(opts Options) (*Result, error) {
 		cmakeType = "Release"
 	}
 
-	// ── Configure ──────────────────────────────────────────────
+	// -- Configure --
 	cmakeArgs := []string{
 		"-S", opts.SourcePath,
 		"-B", buildDir,
@@ -62,6 +67,13 @@ func Build(opts Options) (*Result, error) {
 	if opts.Toolchain != nil {
 		cmakeArgs = append(cmakeArgs, opts.Toolchain.CMakeFlags()...)
 	}
+	// Auto-inject BUILD_SHARED_LIBS based on build type
+	switch opts.Config.BuildType {
+	case "shared":
+		cmakeArgs = append(cmakeArgs, "-DBUILD_SHARED_LIBS=ON")
+	case "static":
+		cmakeArgs = append(cmakeArgs, "-DBUILD_SHARED_LIBS=OFF")
+	}
 	for _, d := range opts.Config.CMakeDefines {
 		cmakeArgs = append(cmakeArgs, "-D"+d)
 	}
@@ -70,7 +82,7 @@ func Build(opts Options) (*Result, error) {
 		return nil, fmt.Errorf("cmake configure: %w", err)
 	}
 
-	// ── Build ──────────────────────────────────────────────────
+	// -- Build --
 	buildArgs := []string{
 		"--build", buildDir,
 		"--", fmt.Sprintf("-j%d", opts.Jobs),
@@ -78,8 +90,7 @@ func Build(opts Options) (*Result, error) {
 	if err := runCmake(buildArgs, opts.Stdout, opts.Stderr); err != nil {
 		return nil, fmt.Errorf("cmake build: %w", err)
 	}
-
-	// ── Install ────────────────────────────────────────────────
+	// -- Install --
 	installArgs := []string{"--install", buildDir}
 	if err := runCmake(installArgs, opts.Stdout, opts.Stderr); err != nil {
 		return nil, fmt.Errorf("cmake install: %w", err)
@@ -88,65 +99,57 @@ func Build(opts Options) (*Result, error) {
 	return &Result{InstallDir: opts.InstallDir}, nil
 }
 
+// installHeaderOnly copies include directories from source to install dir.
+func installHeaderOnly(opts Options) (*Result, error) {
+	if err := os.MkdirAll(opts.InstallDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create install dir: %w", err)
+	}
+	for _, incDir := range opts.Config.IncludeDirs {
+		src := filepath.Join(opts.SourcePath, incDir)
+		dst := filepath.Join(opts.InstallDir, "include", filepath.Base(incDir))
+		if err := copyDir(src, dst); err != nil {
+			fmt.Fprintf(opts.Stderr, "warning: skip include dir %s: %v\n", incDir, err)
+		}
+	}
+	return &Result{InstallDir: opts.InstallDir}, nil
+}
+
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+		return os.MkdirAll(target, info.Mode())
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+		return err
+	}
+		return os.WriteFile(target, data, info.Mode())
+	})
+}
 func runCmake(args []string, stdout, stderr io.Writer) error {
 	cmd := exec.Command("cmake", args...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	return cmd.Run()
 }
-
 // InstallDir returns the cache install path for a package.
 func InstallDir(cacheRoot, name, version, abiTag string) string {
 	return filepath.Join(cacheRoot, name, version, abiTag)
 }
-
-// CmakeArgsFor returns the cmake configure arguments that would be used.
-// Exported for testing.
-func CmakeArgsFor(opts Options) []string {
-	cmakeType := "Debug"
-	if opts.Profile == "release" {
-		cmakeType = "Release"
-	}
-
-	args := []string{
-		"-S", opts.SourcePath,
-		"-B", filepath.Join(opts.SourcePath, ".cstow-build"),
-		fmt.Sprintf("-DCMAKE_BUILD_TYPE=%s", cmakeType),
-		fmt.Sprintf("-DCMAKE_INSTALL_PREFIX=%s", opts.InstallDir),
-	}
-	if opts.Toolchain != nil {
-		args = append(args, opts.Toolchain.CMakeFlags()...)
-	}
-	for _, d := range opts.Config.CMakeDefines {
-		args = append(args, "-D"+d)
-	}
-	return args
-}
-
-// CmakeBuildType converts profile name to cmake build type string.
-func CmakeBuildType(profile string) string {
-	if profile == "release" {
-		return "Release"
-	}
-	return "Debug"
-}
-
 // IsCmakeInstalled checks if cmake is available on PATH.
 func IsCmakeInstalled() bool {
 	_, err := exec.LookPath("cmake")
 	return err == nil
 }
-
 // GuessJobs returns a reasonable parallelism level.
 func GuessJobs() int {
 	return runtime.NumCPU()
-}
-
-// SplitCmakeOutput splits combined output into lines for assertion.
-func SplitCmakeOutput(output []byte) []string {
-	s := strings.TrimSpace(string(output))
-	if s == "" {
-		return nil
-	}
-	return strings.Split(s, "\n")
 }
