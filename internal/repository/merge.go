@@ -18,7 +18,7 @@ type MergedBuildConfig struct {
 //  2. profile override (appends)
 //  3. compiler override (appends)
 //  4. platform override (appends)
-//  5. version-specific cmake override (replaces defines if non-empty; compiler appends)
+//  5. version-specific cmake override (replaces defines/link_flags if non-empty; cxx_flags append; compiler appends)
 func Merge(pkg *PackageDef, ver *VersionOverride, toolchainKind, profile, goos string) *MergedBuildConfig {
 	out := &MergedBuildConfig{
 		System:      pkg.Build.System,
@@ -54,12 +54,14 @@ func Merge(pkg *PackageDef, ver *VersionOverride, toolchainKind, profile, goos s
 
 	// Layer 5: version-specific override
 	if ver != nil && ver.Build != nil {
-		if ver.Build.CMake != nil && len(ver.Build.CMake.Defines) > 0 {
-			out.CMakeDefines = slices.Clone(ver.Build.CMake.Defines) // full replacement
-		}
 		if ver.Build.CMake != nil {
+			if len(ver.Build.CMake.Defines) > 0 {
+				out.CMakeDefines = slices.Clone(ver.Build.CMake.Defines)
+			}
 			out.CXXFlags = append(out.CXXFlags, ver.Build.CMake.CXXFlags...)
-			out.LinkFlags = append(out.LinkFlags, ver.Build.CMake.LinkFlags...)
+			if len(ver.Build.CMake.LinkFlags) > 0 {
+				out.LinkFlags = slices.Clone(ver.Build.CMake.LinkFlags)
+			}
 		}
 		if co, ok := ver.Build.Compiler[toolchainKind]; ok {
 			out.CMakeDefines = append(out.CMakeDefines, co.Defines...)

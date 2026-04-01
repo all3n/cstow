@@ -146,3 +146,34 @@ func TestMerge_AllLayers(t *testing.T) {
 	// cxx_flags: base + release(none) + gcc + ver compiler(none)
 	assert.Equal(t, []string{"-Wall", "-fstack-protector"}, got.CXXFlags)
 }
+
+func TestMerge_LinkFlagsBaseOnly(t *testing.T) {
+	pkg := &PackageDef{
+		Build: BuildDef{
+			System: "cmake",
+			CMake: CMakeBuildDef{
+				LinkFlags: []string{"-lpthread"},
+			},
+		},
+	}
+	got := Merge(pkg, nil, "gcc", "debug", "linux")
+	assert.Equal(t, []string{"-lpthread"}, got.LinkFlags)
+}
+
+func TestMerge_VersionOverrideReplacesLinkFlags(t *testing.T) {
+	pkg := &PackageDef{
+		Build: BuildDef{
+			System: "cmake",
+			CMake: CMakeBuildDef{
+				LinkFlags: []string{"-lold"},
+			},
+		},
+	}
+	ver := &VersionOverride{
+		Build: &BuildOverride{
+			CMake: &CMakeBuildDef{LinkFlags: []string{"-lnew"}},
+		},
+	}
+	got := Merge(pkg, ver, "gcc", "debug", "linux")
+	assert.Equal(t, []string{"-lnew"}, got.LinkFlags)
+}
