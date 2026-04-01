@@ -33,16 +33,16 @@ var addCmd = &cobra.Command{
 
 		resolver.AddDependency(cfg, name, version, source)
 
-		if err := cfg.Save(cfgPath); err != nil {
-			return fmt.Errorf("save config: %w", err)
-		}
-
-		// Resolve and generate lock file
+		// Resolve first — only persist if resolution succeeds
 		cache := resolver.NewFSCache()
 		r := resolver.New(cache, nil)
 		lf, err := r.Resolve(cfg.Dependencies)
 		if err != nil {
 			return fmt.Errorf("resolve dependencies: %w", err)
+		}
+
+		if err := cfg.Save(cfgPath); err != nil {
+			return fmt.Errorf("save config: %w", err)
 		}
 
 		if err := resolver.SaveLock("cstow.lock", lf); err != nil {

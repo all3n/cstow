@@ -61,7 +61,7 @@ func Scaffold(dir string, opts ScaffoldOptions) error {
 		}
 	}
 
-	if err := writeCMakeLists(dir, opts.Name, opts.Type); err != nil {
+	if err := writeCMakeLists(dir, opts.Name, opts.Type, opts.Std); err != nil {
 		return err
 	}
 
@@ -79,15 +79,31 @@ int main() {
 	return os.WriteFile(filepath.Join(srcDir, "main.cpp"), []byte(content), 0o644)
 }
 
-func writeCMakeLists(dir, name, buildType string) error {
+func stdToNumber(std string) string {
+	switch std {
+	case "c++20", "c++2a":
+		return "20"
+	case "c++23", "c++2b":
+		return "23"
+	case "c++14":
+		return "14"
+	case "c++11":
+		return "11"
+	default:
+		return "17"
+	}
+}
+
+func writeCMakeLists(dir, name, buildType, std string) error {
+	cxxStd := stdToNumber(std)
 	content := fmt.Sprintf(`cmake_minimum_required(VERSION 3.16)
 project(%s LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD %s)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 file(GLOB_RECURSE SOURCES src/*.cpp)
-`, name)
+`, name, cxxStd)
 
 	if buildType == "executable" {
 		content += fmt.Sprintf("add_executable(%s ${SOURCES})\n", name)

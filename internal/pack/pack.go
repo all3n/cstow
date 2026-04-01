@@ -3,9 +3,11 @@ package pack
 import (
 	"archive/tar"
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -47,10 +49,12 @@ func CreateTarZst(dir string) ([]byte, error) {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
-
-		_, err = io.Copy(tw, f)
-		return err
+		_, copyErr := io.Copy(tw, f)
+		closeErr := f.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
 	})
 	if err != nil {
 		return nil, err
@@ -86,6 +90,12 @@ func ExtractTarZst(data []byte, dir string) error {
 		}
 
 		target := filepath.Join(dir, hdr.Name)
+		cleanTarget := filepath.Clean(target)
+		cleanDir := filepath.Clean(dir) + string(os.PathSeparator)
+		if !strings.HasPrefix(cleanTarget, cleanDir) {
+			return fmt.Errorf("path traversal detected: %s", hdr.Name)
+		}
+
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}

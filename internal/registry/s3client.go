@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path"
 	"strings"
@@ -74,8 +75,13 @@ func NewS3Client(ctx context.Context, reg config.Registry) (*S3Client, error) {
 	if reg.Provider == "cloudflare" || reg.Provider == "minio" || reg.Provider == "custom" {
 		endpoint := os.Getenv("CSTOW_REGISTRY_URL")
 		if endpoint == "" {
-			endpoint = strings.TrimPrefix(reg.URL, "s3://")
-			endpoint = "https://" + endpoint
+			// Extract just the host from s3://host/path to use as endpoint
+			parsed, parseErr := url.Parse(reg.URL)
+			if parseErr == nil && parsed.Host != "" {
+				endpoint = "https://" + parsed.Host
+			} else {
+				endpoint = "https://" + strings.TrimPrefix(reg.URL, "s3://")
+			}
 		}
 		customResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
 			return aws.Endpoint{

@@ -8,6 +8,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// runBuildInDir runs the build command logic in the given working directory.
+// This avoids os.Chdir which is not goroutine-safe.
+func runBuildInDir(cmd *cobra.Command, workDir string) error {
+	origDir, _ := os.Getwd()
+	if err := os.Chdir(workDir); err != nil {
+		return fmt.Errorf("chdir to %s: %w", workDir, err)
+	}
+	defer os.Chdir(origDir)
+	return buildCmd.RunE(cmd, []string{})
+}
+
 var workspaceCmd = &cobra.Command{
 	Use:   "workspace",
 	Short: "Manage multi-package workspace",
@@ -48,10 +59,7 @@ var workspaceBuildCmd = &cobra.Command{
 		for _, member := range ws.Members {
 			fmt.Printf("\n>> building %s\n", member)
 			// Change to member dir and run build
-			origDir, _ := os.Getwd()
-			os.Chdir(member)
-			err := buildCmd.RunE(cmd, []string{})
-			os.Chdir(origDir)
+			err := runBuildInDir(cmd, member)
 			if err != nil {
 				return fmt.Errorf("build %s failed: %w", member, err)
 			}

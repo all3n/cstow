@@ -94,9 +94,14 @@ func (r *Resolver) resolveRecursive(deps []config.Dependency, locked map[string]
 
 		switch dep.Source {
 		case "local":
-			chosenVer = dep.Version
-			if dep.Version == "*" || dep.Version == "" {
+			// For local source, if version looks like a constraint (not a plain semver),
+			// try to parse it; otherwise use as-is
+			if sv, err := semver.NewVersion(dep.Version); err == nil {
+				chosenVer = sv.Original()
+			} else if dep.Version == "*" || dep.Version == "" {
 				chosenVer = "0.0.0"
+			} else {
+				chosenVer = dep.Version
 			}
 			source = "local:" + dep.Path
 		default:
@@ -171,16 +176,13 @@ func SaveLock(path string, lf *LockFile) error {
 	}
 	defer f.Close()
 
-	header := "# cstow.lock — auto-generated, do not edit\n# version = " + fmt.Sprintf("%d\n\n", lf.Version)
+	header := "# cstow.lock — auto-generated, do not edit\n\n"
 	if _, err := f.WriteString(header); err != nil {
 		return err
 	}
 
 	enc := toml.NewEncoder(f)
-	return enc.Encode(map[string]interface{}{
-		"version": lf.Version,
-		"package": lf.Packages,
-	})
+	return enc.Encode(lf)
 }
 
 // AddDependency adds a dependency to cstow.toml and regenerates the lock

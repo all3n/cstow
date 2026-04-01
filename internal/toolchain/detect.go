@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -44,7 +45,7 @@ func Detect(cfg *config.Toolchain) (*Toolchain, error) {
 			tc.CXX = path
 			tc.CC = os.Getenv("CSTOW_CC")
 			if tc.CC == "" {
-				tc.CC = strings.Replace(path, "++", "", 1)
+				tc.CC = "" // will be derived in probe()
 			}
 			if err := tc.probe(); err != nil {
 				return nil, err
@@ -59,7 +60,7 @@ func Detect(cfg *config.Toolchain) (*Toolchain, error) {
 			tc.CXX = path
 			tc.CC = os.Getenv("CC")
 			if tc.CC == "" {
-				tc.CC = strings.Replace(path, "++", "", 1)
+				tc.CC = "" // will be derived in probe()
 			}
 			if err := tc.probe(); err != nil {
 				return nil, err
@@ -80,7 +81,7 @@ func Detect(cfg *config.Toolchain) (*Toolchain, error) {
 	for _, name := range candidates {
 		if path, err := exec.LookPath(name); err == nil {
 			tc.CXX = path
-			tc.CC = strings.Replace(path, "++", "", 1)
+			tc.CC = "" // will be derived in probe()
 			if err := tc.probe(); err != nil {
 				return nil, err
 			}
@@ -106,7 +107,7 @@ func (tc *Toolchain) resolveExplicit(compiler string) error {
 	for _, s := range suffixes {
 		if path, err := exec.LookPath(s); err == nil {
 			tc.CXX = path
-			tc.CC = strings.Replace(path, "++", "", 1)
+			tc.CC = "" // will be derived in probe()
 			break
 		}
 	}
@@ -118,8 +119,44 @@ func (tc *Toolchain) resolveExplicit(compiler string) error {
 	return tc.probe() // probe modifies tc in place, returns only error
 }
 
+// deriveCC derives the C compiler path from the C++ compiler path.
+// Handles cross-compiler prefixes like x86_64-linux-gnu-g++-11 correctly.
+func (tc *Toolchain) deriveCC() {
+	if tc.CC != "" {
+		return
+	}
+	base := filepath.Base(tc.CXX)
+	dir := filepath.Dir(tc.CXX)
+
+	switch {
+	case strings.HasSuffix(base, "clang++"):
+		// clang++ -> clang
+		tc.CC = filepath.Join(dir, base[:len(base)-2])
+	case strings.HasSuffix(base, "g++"):
+		// g++ -> gcc, x86_64-linux-gnu-g++-11 -> x86_64-linux-gnu-gcc-11
+		stem := base[:len(base)-2] // remove "++"
+		// Replace trailing "g" with "gcc"
+		if stem == "g" {
+			stem = "gcc"
+		} else if strings.HasSuffix(stem, "-g") {
+			stem = stem[:len(stem)-1] + "gcc"
+		}
+		tc.CC = filepath.Join(dir, stem)
+	default:
+		tc.CC = strings.Replace(tc.CXX, "++", "", 1)
+	}
+}
+
 // probe runs the compiler to determine kind, version, target.
 func (tc *Toolchain) probe() error {
+	// Derive CC if not already set
+	tc.deriveCC()
+
+	// MSVC uses different version detection
+	if strings.HasSuffix(filepath.Base(tc.CXX), "cl.exe") {
+		return tc.probeMSVC()
+	}
+
 	out, err := exec.Command(tc.CXX, "--version").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("probe %s: %w", tc.CXX, err)
@@ -158,6 +195,32 @@ func (tc *Toolchain) probe() error {
 		}
 	}
 
+	return nil
+}
+
+// probeMSVC detects MSVC version from environment or cl.exe output.
+func (tc *Toolchain) probeMSVC() error {
+	tc.Kind = "msvc"
+	// Try VCToolsVersion env var first
+	if v := os.Getenv("VCToolsVersion"); v != "" {
+		m := versionRe.FindStringSubmatch(v)
+		if len(m) == 4 {
+			tc.Version[0] = atoi(m[1])
+			tc.Version[1] = atoi(m[2])
+			tc.Version[2] = atoi(m[3])
+		}
+	}
+	// Try running cl.exe to get version from output
+	out, err := exec.Command(tc.CXX).CombinedOutput()
+	if err == nil {
+		text := string(out)
+		m := versionRe.FindStringSubmatch(text)
+		if len(m) == 4 {
+			tc.Version[0] = atoi(m[1])
+			tc.Version[1] = atoi(m[2])
+			tc.Version[2] = atoi(m[3])
+		}
+	}
 	return nil
 }
 
