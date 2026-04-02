@@ -1,5 +1,6 @@
 env.local.sh
 /cstow
+.worktrees/
 .claude/settings.local.json 
 .claude/ralph-loop.local.md
 /tmp
