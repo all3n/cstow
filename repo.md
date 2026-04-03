@@ -121,6 +121,10 @@ url = "s3://my-bucket/cstow"
 provider = "cloudflare"
 region = "auto"
 profile = "cstow"
+endpoint_url = "https://<account>.r2.cloudflarestorage.com"
+# 可选：显式凭证。若设置，会优先于 ~/.aws/credentials
+access_key = ""
+secret_key = ""
 
 [toolchain]
 prefer = "clang"
@@ -151,6 +155,11 @@ retries = 5
   - repository 搜索优先级，数字越小越优先
 - `registry`
   - `publish` / `fetch` 使用
+  - project `cstow.toml` 中未配置时，会回退到 `~/.cstow/config.toml`
+  - 如果 project 和 global 都配置了同名或同 URL 的 registry，会优先使用 project 字段，并用 global 中缺失字段补全
+  - `endpoint_url` 可以显式指定 S3 兼容 endpoint
+  - 未显式配置 `endpoint_url` 时，会尝试从 `AWS_PROFILE` / `registry.profile` 对应的 `~/.aws/config` 读取 S3 endpoint
+  - 显式凭证优先级：`CSTOW_REGISTRY_KEY/SECRET` > `registry.access_key/secret_key` > `~/.aws/credentials` / AWS 默认链
 - `cache.dir`
   - 当前结构体支持，但 `resolver.NewFSCache()` 仍优先走 `CSTOW_CACHE_DIR` 或默认 `~/.cstow/cache`，还没有完全对齐到这个字段
 

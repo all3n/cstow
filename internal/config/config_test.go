@@ -59,6 +59,9 @@ name = "default"
 url = "s3://my-bucket/cstow"
 provider = "cloudflare"
 region = "auto"
+endpoint_url = "https://example.r2.cloudflarestorage.com"
+access_key = "cfg-key"
+secret_key = "cfg-secret"
 
 [toolchain]
 prefer = "clang"
@@ -98,6 +101,12 @@ retries = 5
 
 	assert.Equal(t, "clang", g.Toolchain.Prefer)
 	assert.Equal(t, "12", g.Toolchain.MinGCC)
+
+	require.Len(t, g.Registries, 1)
+	assert.Equal(t, "default", g.Registries[0].Name)
+	assert.Equal(t, "https://example.r2.cloudflarestorage.com", g.Registries[0].EndpointURL)
+	assert.Equal(t, "cfg-key", g.Registries[0].AccessKey)
+	assert.Equal(t, "cfg-secret", g.Registries[0].SecretKey)
 
 	require.Len(t, g.Build.Flags.CXXFlags, 1)
 	assert.Equal(t, "-fstack-protector-strong", g.Build.Flags.CXXFlags[0])
@@ -154,4 +163,78 @@ func TestGlobal_RepositoryPaths_Empty(t *testing.T) {
 	paths := g.RepositoryPaths()
 	require.Len(t, paths, 1)
 	assert.Contains(t, paths[0], ".cstow/repository")
+}
+
+func TestResolvePrimaryRegistry_UsesGlobalRegistryWhenProjectMissing(t *testing.T) {
+	global := &Global{
+		Registries: []Registry{
+			{
+				Name:        "global",
+				URL:         "s3://bucket/prefix",
+				EndpointURL: "https://example.com",
+				Profile:     "cstow",
+			},
+		},
+	}
+
+	reg, err := ResolvePrimaryRegistry(nil, global)
+	require.NoError(t, err)
+	assert.Equal(t, "global", reg.Name)
+	assert.Equal(t, "https://example.com", reg.EndpointURL)
+	assert.Equal(t, "cstow", reg.Profile)
+}
+
+func TestResolvePrimaryRegistry_MergesMatchingGlobalRegistry(t *testing.T) {
+	project := []Registry{
+		{
+			Name: "default",
+			URL:  "s3://bucket/project",
+		},
+	}
+	global := &Global{
+		Registries: []Registry{
+			{
+				Name:        "default",
+				URL:         "s3://bucket/global",
+				EndpointURL: "https://example.com",
+				Profile:     "cstow",
+				AccessKey:   "cfg-key",
+				SecretKey:   "cfg-secret",
+			},
+		},
+	}
+
+	reg, err := ResolvePrimaryRegistry(project, global)
+	require.NoError(t, err)
+	assert.Equal(t, "s3://bucket/project", reg.URL)
+	assert.Equal(t, "https://example.com", reg.EndpointURL)
+	assert.Equal(t, "cstow", reg.Profile)
+	assert.Equal(t, "cfg-key", reg.AccessKey)
+	assert.Equal(t, "cfg-secret", reg.SecretKey)
+}
+
+func TestResolvePrimaryRegistry_PrefersProjectFieldsOverGlobal(t *testing.T) {
+	project := []Registry{
+		{
+			Name:        "default",
+			URL:         "s3://bucket/project",
+			EndpointURL: "https://project.example.com",
+			Profile:     "project",
+		},
+	}
+	global := &Global{
+		Registries: []Registry{
+			{
+				Name:        "default",
+				URL:         "s3://bucket/global",
+				EndpointURL: "https://global.example.com",
+				Profile:     "global",
+			},
+		},
+	}
+
+	reg, err := ResolvePrimaryRegistry(project, global)
+	require.NoError(t, err)
+	assert.Equal(t, "https://project.example.com", reg.EndpointURL)
+	assert.Equal(t, "project", reg.Profile)
 }

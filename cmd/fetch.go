@@ -53,8 +53,12 @@ var fetchCmd = &cobra.Command{
 		cache := resolver.NewFSCache()
 
 		var s3client *registry.S3Client
-		if len(cfg.Registries) > 0 {
-			s3client, err = registry.NewS3Client(context.Background(), cfg.Registries[0])
+		globalCfg, err := config.LoadGlobal()
+		if err != nil {
+			return fmt.Errorf("load global config: %w", err)
+		}
+		if reg, regErr := config.ResolvePrimaryRegistry(cfg.Registries, globalCfg); regErr == nil {
+			s3client, err = registry.NewS3Client(context.Background(), reg)
 			if err != nil {
 				return fmt.Errorf("create S3 client: %w", err)
 			}

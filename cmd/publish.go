@@ -26,11 +26,15 @@ var publishCmd = &cobra.Command{
 			return fmt.Errorf("load config: %w", err)
 		}
 
-		if len(cfg.Registries) == 0 {
-			return fmt.Errorf("no [[registry]] configured in cstow.toml")
+		globalCfg, err := config.LoadGlobal()
+		if err != nil {
+			return fmt.Errorf("load global config: %w", err)
 		}
 
-		reg := cfg.Registries[0]
+		reg, err := config.ResolvePrimaryRegistry(cfg.Registries, globalCfg)
+		if err != nil {
+			return fmt.Errorf("resolve registry: %w", err)
+		}
 		s3client, err := registry.NewS3Client(context.Background(), reg)
 		if err != nil {
 			return fmt.Errorf("create S3 client: %w", err)

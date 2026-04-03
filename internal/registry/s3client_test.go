@@ -2,9 +2,13 @@ package registry
 
 import (
 	"bytes"
+	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/BurntSushi/toml"
+	"github.com/all3n/cstow/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -84,4 +88,73 @@ func TestSelectArtifactDoesNotGuessTypedArtifactWhenBuildTypeIsUnspecified(t *te
 	artifact, err := SelectArtifact(manifest, []string{"gcc13"}, "")
 	require.Error(t, err)
 	assert.Nil(t, artifact)
+}
+
+func TestResolveRegistryRuntimeConfigPrefersExplicitRegistryValues(t *testing.T) {
+	t.Setenv("CSTOW_REGISTRY_URL", "https://env.example.com")
+	t.Setenv("CSTOW_REGISTRY_KEY", "env-key")
+	t.Setenv("CSTOW_REGISTRY_SECRET", "env-secret")
+
+	cfg, err := resolveRegistryRuntimeConfig(context.Background(), config.Registry{
+		Name:        "default",
+		URL:         "s3://bucket/prefix",
+		EndpointURL: "https://config.example.com",
+		AccessKey:   "cfg-key",
+		SecretKey:   "cfg-secret",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "https://env.example.com", cfg.EndpointURL)
+	assert.Equal(t, "env-key", cfg.AccessKey)
+	assert.Equal(t, "env-secret", cfg.SecretKey)
+	assert.True(t, cfg.UsePathStyle)
+}
+
+func TestResolveRegistryRuntimeConfigUsesSharedConfigEndpoint(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AWS_PROFILE", "")
+	t.Setenv("CSTOW_REGISTRY_URL", "")
+
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".aws"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".aws", "config"), []byte(`
+[profile cstow]
+region = us-east-1
+s3 =
+    endpoint_url = https://profile.example.com
+`), 0o644))
+
+	cfg, err := resolveRegistryRuntimeConfig(context.Background(), config.Registry{
+		Name:    "default",
+		URL:     "s3://bucket/prefix",
+		Profile: "cstow",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "https://profile.example.com", cfg.EndpointURL)
+	assert.True(t, cfg.UsePathStyle)
+}
+
+func TestResolveRegistryRuntimeConfigPrefersRegistryCredentialsOverSharedCredentials(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AWS_PROFILE", "")
+	t.Setenv("CSTOW_REGISTRY_KEY", "")
+	t.Setenv("CSTOW_REGISTRY_SECRET", "")
+
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".aws"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".aws", "credentials"), []byte(`
+[cstow]
+aws_access_key_id = shared-key
+aws_secret_access_key = shared-secret
+`), 0o644))
+
+	cfg, err := resolveRegistryRuntimeConfig(context.Background(), config.Registry{
+		Name:      "default",
+		URL:       "s3://bucket/prefix",
+		Profile:   "cstow",
+		AccessKey: "cfg-key",
+		SecretKey: "cfg-secret",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "cfg-key", cfg.AccessKey)
+	assert.Equal(t, "cfg-secret", cfg.SecretKey)
 }

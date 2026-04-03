@@ -51,11 +51,14 @@ type Dependency struct {
 }
 
 type Registry struct {
-	Name     string `toml:"name"`
-	URL      string `toml:"url"`
-	Provider string `toml:"provider"`
-	Region   string `toml:"region"`
-	Profile  string `toml:"profile"`
+	Name        string `toml:"name"`
+	URL         string `toml:"url"`
+	Provider    string `toml:"provider"`
+	Region      string `toml:"region"`
+	Profile     string `toml:"profile"`
+	EndpointURL string `toml:"endpoint_url"`
+	AccessKey   string `toml:"access_key"`
+	SecretKey   string `toml:"secret_key"`
 }
 
 type Toolchain struct {
@@ -206,6 +209,74 @@ func applyDefaults(g *Global) {
 	if g.Cache.Dir == "" {
 		g.Cache.Dir = "~/.cstow/cache"
 	}
+}
+
+// ResolvePrimaryRegistry picks the effective registry configuration for commands
+// that operate on a single registry.
+func ResolvePrimaryRegistry(projectRegistries []Registry, global *Global) (Registry, error) {
+	if len(projectRegistries) > 0 {
+		reg := projectRegistries[0]
+		if global == nil || len(global.Registries) == 0 {
+			return reg, nil
+		}
+		if fallback, ok := matchRegistry(reg, global.Registries); ok {
+			return mergeRegistry(reg, fallback), nil
+		}
+		return reg, nil
+	}
+
+	if global != nil && len(global.Registries) > 0 {
+		return global.Registries[0], nil
+	}
+
+	return Registry{}, fmt.Errorf("no registry configured")
+}
+
+func matchRegistry(target Registry, candidates []Registry) (Registry, bool) {
+	if target.Name != "" {
+		for _, candidate := range candidates {
+			if candidate.Name == target.Name {
+				return candidate, true
+			}
+		}
+	}
+	if target.URL != "" {
+		for _, candidate := range candidates {
+			if candidate.URL == target.URL {
+				return candidate, true
+			}
+		}
+	}
+	return Registry{}, false
+}
+
+func mergeRegistry(primary, fallback Registry) Registry {
+	merged := primary
+	if merged.Name == "" {
+		merged.Name = fallback.Name
+	}
+	if merged.URL == "" {
+		merged.URL = fallback.URL
+	}
+	if merged.Provider == "" {
+		merged.Provider = fallback.Provider
+	}
+	if merged.Region == "" {
+		merged.Region = fallback.Region
+	}
+	if merged.Profile == "" {
+		merged.Profile = fallback.Profile
+	}
+	if merged.EndpointURL == "" {
+		merged.EndpointURL = fallback.EndpointURL
+	}
+	if merged.AccessKey == "" {
+		merged.AccessKey = fallback.AccessKey
+	}
+	if merged.SecretKey == "" {
+		merged.SecretKey = fallback.SecretKey
+	}
+	return merged
 }
 
 // RepositoryPaths returns ordered directory paths for Finder, expanding ~ and
