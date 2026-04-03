@@ -1,495 +1,493 @@
-先用两张结构图把整体布局和配置继承关系说清楚，再给出所有文件的完整规格。
+# cstow Repository 系统说明
 
-## 全局目录结构## 配置继承与覆盖流程---
+更新时间：2026-04-02
 
-## 一、`~/.cstow/config.toml` — 全局用户配置
+这份文档描述的是 **当前仓库中的 repository 系统 MVP**，不是最初的理想终态设计。
+
+如果你想看历史设计稿和更激进的目标方案，参考：
+
+- `docs/superpowers/specs/2026-03-31-repository-system-design.md`
+- `docs/superpowers/specs/2026-04-01-repository-core-design.md`
+
+本文优先回答三个问题：
+
+1. 现在代码里到底支持什么
+2. `repository` 和 `registry` 的边界是什么
+3. 哪些字段只是“已解析”，哪些字段已经真正参与构建
+
+## 一、先分清两个概念
+
+### 1. `registry`
+
+`registry` 用来存放和分发 **预编译产物**。
+
+当前相关命令：
+
+- `cstow publish`
+- `cstow fetch`
+
+核心实现：
+
+- `internal/registry/`
+- `internal/pack/`
+
+### 2. `repository`
+
+`repository` 用来存放 **源码构建 recipe**，也就是“这个 C++ 包该怎么拉源码、怎么配 CMake、怎么按平台/编译器做覆盖”。
+
+当前相关命令：
+
+- `cstow install`
+
+核心实现：
+
+- `internal/repository/`
+- `internal/builder/`
+
+### 3. 当前两条路径还没有打通
+
+这点必须明确。
+
+- `cstow add` 目前不会校验 dependency 是否存在于 repository
+- `cstow fetch` 会优先走 registry；缺失时可回退到 repository recipe 的源码构建
+- `cstow build` 只会消费 `./cstow_deps`，不会自动查 repository 或自动把 `install` 结果接进项目构建
+- `cstow install` 目前只是“把某个 recipe 包构建到本地 cache”，不会自动改项目依赖、不会自动写 `cstow.lock`、也不会自动生成 `cstow_deps` 链接
+
+所以今天的 repository 系统更准确地说是：
+
+- 已有独立 MVP
+- 但尚未成为项目依赖流里的自动 fallback
+
+## 二、当前命令关系
+
+### 1. 项目依赖路径
+
+这是今天项目构建真正依赖的路径：
+
+1. `cstow add`
+2. `cstow fetch`
+3. `cstow build`
+
+含义分别是：
+
+- `add`：修改 `cstow.toml` 并生成/更新 `cstow.lock`，可通过 `--build-type` 写入 dependency 的目标产物类型
+- `fetch`：优先从 registry 下载预编译包到 cache，缺失时可回退到 repository recipe 源码构建，并在项目下生成 `./cstow_deps/<pkg>` 符号链接
+- `build`：运行项目自身的 CMake，并把 `cstow_deps` 注入到 `CMAKE_PREFIX_PATH`
+
+### 2. repository recipe 路径
+
+这是今天 repository 系统真正连通的路径：
+
+1. `cstow install <package>[@<version>]`
+
+含义：
+
+- 从 `~/.cstow/config.toml` 读取 repository 搜索路径
+- 查找 `package.toml` 和可选的 `versions/<ver>.toml`
+- 合并 build 配置
+- 拉源码
+- 本地构建
+- 安装到 `~/.cstow/cache/<name>/<version>/<abi_tag>/<build_type>/`
+
+## 三、全局配置：`~/.cstow/config.toml`
+
+当前代码中可解析的用户级配置结构如下：
 
 ```toml
-# ~/.cstow/config.toml
-# 所有字段均有合理默认值，不需要全部填写
-
 [defaults]
-std         = "c++17"          # 全局默认 C++ 标准
-profile     = "debug"          # 默认构建 profile
-jobs        = 0                # 并发编译数，0 = CPU 核心数
-color       = true             # 彩色终端输出
+std = "c++17"
+profile = "debug"
+jobs = 0
+color = true
 
 [cache]
-dir         = "~/.cstow/cache" # 可重定向（如 NFS 共享缓存）
-max_size_gb = 10               # 超出后按 LRU 淘汰，0 = 不限制
-retention_days = 90            # 0 = 永久保留
-
-# 注册的额外 repository 目录（有序，优先级从高到低）
-# 内置 ~/.cstow/repository/ 始终作为最后一个 fallback
-[[repositories]]
-name = "work"
-path = "/opt/cstow-repos/work"   # 本地目录
+dir = "~/.cstow/cache"
+max_size_gb = 10
+retention_days = 90
 
 [[repositories]]
 name = "team"
-path = "~/projects/cstow-pkgs"   # ~ 会被展开
+path = "/opt/cstow-pkgs"
+priority = 10
 
-# S3 远端 registry（用于 publish/fetch 预编译产物，与 repository 是两个概念）
-[[registry]]
-name     = "default"
-url      = "s3://my-bucket/cstow"
-provider = "cloudflare"           # aws | cloudflare | minio | custom
-region   = "auto"
-key_env  = "CSTOW_KEY"            # 从哪个环境变量读 access key
-secret_env = "CSTOW_SECRET"
+[[repositories]]
+name = "work"
+path = "~/projects/pkgs"
+priority = 20
 
 [[registry]]
-name     = "readonly-mirror"
-url      = "https://cstow-mirror.example.com"
-provider = "custom"
-read_only = true                  # 只允许 fetch，不允许 publish
+name = "default"
+url = "s3://my-bucket/cstow"
+provider = "cloudflare"
+region = "auto"
+profile = "cstow"
 
-# 全局编译器偏好（可被项目 cstow.toml [toolchain] 覆盖）
 [toolchain]
-prefer  = "clang"                # auto | gcc | clang | msvc
-min_gcc = "11"
-min_clang = "14"
+prefer = "clang"
+min_gcc = "12"
+min_clang = "16"
 
-# 全局默认构建 flags（package.toml 可追加或覆盖）
 [build.flags]
-cxx_flags  = ["-fstack-protector-strong"]
+cxx_flags = ["-fstack-protector-strong"]
 link_flags = []
-defines    = []
+defines = []
 
-# 代理（下载依赖时使用）
 [network]
-proxy       = ""                 # "http://proxy:8080"
-no_proxy    = ["localhost", "127.0.0.1"]
-timeout_sec = 60
-retries     = 3
+proxy = "http://proxy:8080"
+no_proxy = ["localhost", "127.0.0.1"]
+timeout_sec = 30
+retries = 5
 ```
 
----
+### 这些字段当前真正生效的部分
 
-## 二、`~/.cstow/repository/` — 包定义库结构
+- `defaults.std`
+  - `cstow install` 计算 ABI tag 时会使用
+- `toolchain.prefer`
+  - `cstow install` 探测编译器时会使用
+- `repositories[].path`
+  - repository 搜索路径
+- `repositories[].priority`
+  - repository 搜索优先级，数字越小越优先
+- `registry`
+  - `publish` / `fetch` 使用
+- `cache.dir`
+  - 当前结构体支持，但 `resolver.NewFSCache()` 仍优先走 `CSTOW_CACHE_DIR` 或默认 `~/.cstow/cache`，还没有完全对齐到这个字段
 
-### 目录约定
+### 这些字段当前只解析或只部分保留
 
-```
+- `repositories[].git`
+- `repositories[].branch`
+- `repositories[].archive`
+- `repositories[].auto_update`
+- `[build.flags]`
+- `[network]`
+
+这些字段在配置结构里已存在，但 repository / install 主路径还没有完整消费。
+
+## 四、repository 目录布局
+
+当前查找器约定的目录结构：
+
+```text
 ~/.cstow/repository/
-├── g/
-│   └── googletest/
-│       ├── package.toml          # 包级主配置（共享编译逻辑）
-│       ├── versions/             # 版本特定覆盖（可选，按需创建）
-│       │   ├── 1.14.0.toml
-│       │   └── 1.13.0.toml
-│       └── patches/              # 补丁文件（可选）
-│           └── 1.14.0-fix-msvc.patch
 ├── f/
 │   └── fmt/
 │       ├── package.toml
-│       └── versions/
-│           └── 11.0.0.toml
-├── s/
-│   └── spdlog/
-│       └── package.toml          # 无版本覆盖时只需这一个文件
-└── z/
-    └── zlib/
+│       ├── versions/
+│       │   └── 10.2.1.toml
+│       └── patches/
+│           └── 10.2.1-fix.patch
+├── g/
+│   └── googletest/
+│       └── package.toml
+└── _/
+    └── 7zip/
         └── package.toml
 ```
 
-索引规则：取包名第一个小写字母，`_` `-` 开头的包归入 `_` 目录。
+规则：
 
----
+- 包名首字母是字母时，使用小写首字母目录
+- 非字母开头时放到 `_`
+- `versions/` 可选
+- `patches/` 可选
 
-## 三、`package.toml` — 包级共享配置（核心设计）
+### 搜索顺序
 
-这是整个 repository 系统最重要的文件，承载所有版本共享的构建知识。
+`Finder` 的搜索顺序是：
+
+1. `~/.cstow/config.toml` 中声明的 `repositories`
+2. 按 `priority` 从小到大排序
+3. 最后追加内置 fallback：`~/.cstow/repository`
+
+一旦在更高优先级仓库中找到匹配版本，就不会继续往后查找。
+
+## 五、`package.toml` 当前支持的 schema
+
+当前 `internal/repository/package.go` 支持的核心结构如下。
 
 ```toml
-# ~/.cstow/repository/g/googletest/package.toml
+versions = ["1.14.0", "1.13.0"]
 
 [package]
-name        = "googletest"
-description = "Google C++ Testing and Mocking Framework"
-homepage    = "https://github.com/google/googletest"
-license     = "BSD-3-Clause"
+name = "googletest"
+description = "Google C++ Testing Framework"
+homepage = "https://github.com/google/googletest"
+license = "BSD-3-Clause"
 
-# 支持的版本列表（semver，新版在前）
-# 每个版本可额外有 versions/<ver>.toml 覆盖部分字段
-versions = [
-  "1.14.0",
-  "1.13.0",
-  "1.12.1",
-  "1.11.0",
-]
-
-# 源码获取方式（所有版本共享，版本文件可覆盖 url/tag）
 [source]
 type = "git"
-url  = "https://github.com/google/googletest.git"
-# tag 模板：{version} 会被替换为实际版本号
+url = "https://github.com/google/googletest.git"
 tag_template = "v{version}"
 
-# 也支持 archive 方式（与 git 二选一）
-# [source]
-# type = "archive"
-# url_template = "https://github.com/google/googletest/archive/refs/tags/v{version}.tar.gz"
-# sha256_versions = { "1.14.0" = "abcdef...", "1.13.0" = "fedcba..." }
-
-# ── 共享的构建配置（所有版本默认使用）──────────────────────────
 [build]
-system       = "cmake"           # cmake | make | autoconf | meson | header-only | custom
-type         = "static"          # static | shared | header-only | both
+system = "cmake"
+type = "static"
 
-# CMake 专用配置
 [build.cmake]
-defines = [
-  "BUILD_SHARED_LIBS=OFF",
-  "BUILD_GMOCK=ON",
-  "INSTALL_GTEST=OFF",
-]
-# install_targets 决定 cstow 从 build tree 里取哪些产物
-install_targets = ["gtest", "gtest_main", "gmock", "gmock_main"]
+defines = ["BUILD_SHARED_LIBS=OFF", "INSTALL_GTEST=OFF"]
+cxx_flags = ["-Wall"]
+link_flags = []
+install_targets = ["gtest", "gmock"]
 
-# 各 profile 下的编译参数（叠加在全局之上）
-[build.cmake.profile.debug]
-defines   = ["CMAKE_BUILD_TYPE=Debug"]
+[build.profile.debug]
+defines = ["CMAKE_BUILD_TYPE=Debug"]
 cxx_flags = ["-g", "-O0"]
+link_flags = []
 
-[build.cmake.profile.release]
-defines   = ["CMAKE_BUILD_TYPE=Release"]
-cxx_flags = ["-O3", "-DNDEBUG"]
+[build.profile.release]
+defines = ["CMAKE_BUILD_TYPE=Release"]
+cxx_flags = ["-O3"]
+link_flags = []
 
-# ── 编译器特殊适配 ─────────────────────────────────────────────
+[build.compiler.gcc]
+cxx_flags = ["-fPIC"]
+
 [build.compiler.msvc]
-defines   = ["_SILENCE_TR1_NAMESPACE_DEPRECATION_WARNING=1"]
-cxx_flags = ["/EHsc", "/utf-8"]
+defines = ["_CRT_SECURE_NO_WARNINGS=1"]
+cxx_flags = ["/EHsc"]
 
-[build.compiler.clang]
-cxx_flags = ["-Wno-unused-parameter"]
+[build.platform.linux]
+defines = ["LINUX=1"]
 
-# ── 平台特殊适配 ───────────────────────────────────────────────
 [build.platform.windows]
-defines   = ["GTEST_OS_WINDOWS=1"]
+defines = ["WINDOWS=1"]
 
-[build.platform.macos]
-cxx_flags = ["-mmacosx-version-min=11.0"]
-
-# ── 产物描述（cstow 按此收集头文件和库文件）──────────────────
 [artifacts]
 include_dirs = ["googletest/include", "googlemock/include"]
-libs         = ["libgtest.a", "libgtest_main.a", "libgmock.a", "libgmock_main.a"]
-# Windows 下 .lib 后缀自动处理
+libs = ["libgtest.a", "libgmock.a"]
 
-# ── 依赖（此包自身的依赖）────────────────────────────────────
-# googletest 本身无外部依赖，留空示例
-# [[dependencies]]
-# name    = "foo"
-# version = "^1.0"
+[[dependencies]]
+name = "absl"
+version = "^20240116"
+source = "registry"
+build_type = "shared"
 ```
 
----
+### 关键说明
 
-## 四、`versions/1.14.0.toml` — 版本特定覆盖
+- `versions` 是顶层字段，不在 `[package]` 里
+- profile 层当前写法是 `[build.profile.<name>]`
+- compiler 层当前写法是 `[build.compiler.<kind>]`
+- platform 层当前写法是 `[build.platform.<goos>]`
+- `build.system` 当前数据结构允许多种值，但真正构建路径目前主要支持 CMake
+- `build.type` 当前用于区分 `static` / `shared` / `header-only`
+- `cstow add --build-type <kind>` 会把 dependency 的目标类型写入 `cstow.toml` 和 `cstow.lock`
+- `cstow install --type <kind>` 会覆盖 recipe 默认 `build.type`；当前实现里这个显式覆盖也会压过 recipe 中的 `BUILD_SHARED_LIBS=...` define
+- `[[dependencies]].build_type` 当前会进入 `cstow.lock`，并用于区分 `fetch` / `install` / cache 路径 / registry artifact key
+- `[[dependencies]]` 可以被解析，但 `cstow install` 还不会递归安装这些 recipe 依赖
 
-版本文件只需写与 `package.toml` 不同的字段，其余全部继承。
+### `source` 字段当前状态
+
+- `type = "git"`
+  - 已支持
+- `type = "archive"`
+  - 结构已支持，但 `internal/repository/source.go` 中的 `FetchArchive` 还没有实现
+
+### `artifacts` 字段当前状态
+
+- `include_dirs`
+  - 对 `header-only` 安装路径有实际作用
+- `libs`
+  - 当前主要是元数据，还没有进入完整的安装校验流程
+
+### `install_targets` 字段当前状态
+
+已经被解析，但 `internal/builder/` 还没有用它来做目标级安装或安装结果校验。
+
+## 六、版本覆盖：`versions/<version>.toml`
+
+当前 `VersionOverride` 支持这些字段：
 
 ```toml
-# ~/.cstow/repository/g/googletest/versions/1.14.0.toml
-# 只写需要覆盖的内容
+patch = "1.14.0-fix-msvc.patch"
 
-# 覆盖 sha256（archive 模式下校验用）
 [source]
 sha256 = "8ad598c73ad796e0d8280b082cebd82a630d73e73cd3c70057938a6501bba5d7"
 
-# 此版本新增的 cmake 选项（追加到 package.toml 的 defines 之后）
+[build]
+type = "shared"
+
 [build.cmake]
 defines = [
   "BUILD_SHARED_LIBS=OFF",
-  "BUILD_GMOCK=ON",
   "INSTALL_GTEST=OFF",
-  "GTEST_HAS_ABSL=OFF",   # 1.14 新增，旧版本没有这个选项
+  "GTEST_HAS_ABSL=OFF",
 ]
+cxx_flags = ["-Wno-error"]
+link_flags = ["-lpthread"]
 
-# 此版本在 MSVC 下有特殊问题，额外补丁
-[build.compiler.msvc]
-defines   = [
-  "_SILENCE_TR1_NAMESPACE_DEPRECATION_WARNING=1",
-  "_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING=1",  # 1.14 特有
-]
-patch = "1.14.0-fix-msvc.patch"   # 相对于 patches/ 目录
+[build.compiler.clang]
+cxx_flags = ["-Wno-unused-private-field"]
 ```
 
----
+### 当前生效规则
 
-## 五、项目 `cstow.toml` — 极简声明（Cargo 风格）
+- `build.type`
+  - 会覆盖 package 基础层的 `build.type`
+- `build.cmake.defines`
+  - 如果非空，会 **替换** 基础层/profile/compiler/platform 累积出来的 defines
+- `build.cmake.cxx_flags`
+  - 追加
+- `build.cmake.link_flags`
+  - 如果非空，会替换原有 link flags
+- `build.compiler.<kind>`
+  - 追加到对应编译器层
+- `patch`
+  - 会进入 merged config，但当前构建前 **不会自动应用**
+- `source.sha256`
+  - 会被解析，但当前源码拉取流程 **不会做校验**
 
-项目里的配置文件只管"我要什么"，不管"怎么编译它"。
+## 七、Finder 行为
 
-```toml
-[package]
-name    = "my-game-engine"
-version = "0.3.0"
-std     = "c++20"
+`Finder.Find(name, versionConstraint)` 的行为：
 
-# 就这么简单，版本支持 semver 范围
-[[dependencies]]
-name    = "googletest"
-version = "^1.14"
+1. 根据包名首字母定位子目录
+2. 按 repository 搜索顺序查找 `package.toml`
+3. 使用 semver 选择满足约束的最高版本
+4. 如果存在 `versions/<matched>.toml`，一并加载
+5. 返回：
+   - `PackageDef`
+   - 解析后的具体版本号
+   - 可选 `VersionOverride`
+   - 命中的 repository 根路径
 
-[[dependencies]]
-name    = "fmt"
-version = "^10"
+### 版本选择规则
 
-[[dependencies]]
-name    = "spdlog"
-version = ">=1.12, <2.0"
+- `*` 或空约束：取最高版本
+- semver 范围：取满足范围的最高版本
+- 不能解析为 semver constraint 时：按“精确版本字符串”匹配
 
-# 本地依赖（路径相对于当前项目）
-[[dependencies]]
-name    = "myutil"
-version = "*"
-path    = "../myutil"
+## 八、Merge 行为
 
-# dev-only 依赖（不打进发布产物）
-[[dev-dependencies]]
-name    = "benchmark"
-version = "^1.8"
+当前 `Merge(pkg, ver, toolchainKind, profile, goos)` 的优先级从低到高是：
 
-# 可选：覆盖全局工具链选择
-[toolchain]
-prefer = "clang"
-```
+1. package 基础层 `build.cmake`
+2. `build.profile.<profile>`
+3. `build.compiler.<toolchainKind>`
+4. `build.platform.<goos>`
+5. `versions/<ver>.toml` 中的 build override
 
-**项目 toml 不需要写任何编译参数** — 所有构建知识都在 repository 的 `package.toml` 里，项目只声明依赖关系。
-
----
-
-## 六、配置合并优先级与 Go 实现
-
-### 优先级（从低到高）
-
-```
-内置 package.toml [build]
-  ↓ 版本 versions/x.y.z.toml（部分字段覆盖）
-    ↓ ~/.cstow/config.toml [build.flags]（用户全局偏好）
-      ↓ 项目 cstow.toml [toolchain]（项目工具链选择）
-        ↓ --profile release CLI 参数
-          ↓ 环境变量 CSTOW_CXX_FLAGS / CSTOW_DEFINES（最高）
-```
-
-### Go 核心数据结构
+输出结构：
 
 ```go
-// internal/repository/package.go
-
-type PackageDef struct {
-    Package    PackageMeta        `toml:"package"`
-    Versions   []string           `toml:"versions"`
-    Source     SourceDef          `toml:"source"`
-    Build      BuildDef           `toml:"build"`
-    Artifacts  ArtifactsDef       `toml:"artifacts"`
-    Deps       []DepRef           `toml:"dependencies"`
-}
-
-type BuildDef struct {
-    System  string              `toml:"system"`   // cmake|make|meson|...
-    Type    string              `toml:"type"`     // static|shared|header-only
-    CMake   CMakeBuildDef       `toml:"cmake"`
-    Profiles map[string]ProfileOverride `toml:"profile"`
-    Compiler map[string]CompilerOverride `toml:"compiler"` // msvc|gcc|clang
-    Platform map[string]PlatformOverride `toml:"platform"` // windows|linux|macos
-}
-
-// VersionOverride 只存储与 PackageDef 不同的字段，nil = 继承
-type VersionOverride struct {
-    Source  *SourceOverride  `toml:"source"`
-    Build   *BuildOverride   `toml:"build"`
-    Patch   string           `toml:"patch"`
-}
-```
-
-### Repository 查找器
-
-```go
-// internal/repository/finder.go
-
-type Finder struct {
-    // 查找顺序：外部目录列表（按 config.toml 声明顺序）+ 内置目录
-    searchPaths []string
-}
-
-func NewFinder(globalCfg *config.Global) *Finder {
-    paths := make([]string, 0)
-    for _, r := range globalCfg.Repositories {
-        paths = append(paths, expandHome(r.Path))
-    }
-    // 内置目录始终最后
-    paths = append(paths, filepath.Join(cstowHome(), "repository"))
-    return &Finder{searchPaths: paths}
-}
-
-// Find 返回第一个命中的 PackageDef + 可选的版本覆盖
-func (f *Finder) Find(name, version string) (*ResolvedPkg, error) {
-    letter := string([]rune(strings.ToLower(name))[0])
-    if !unicode.IsLetter([]rune(letter)[0]) {
-        letter = "_"
-    }
-    for _, root := range f.searchPaths {
-        pkgDir := filepath.Join(root, letter, name)
-        pkgFile := filepath.Join(pkgDir, "package.toml")
-        if _, err := os.Stat(pkgFile); err != nil {
-            continue // 此 repository 没有这个包，继续找下一个
-        }
-        pkg, err := loadPackage(pkgFile)
-        if err != nil {
-            return nil, fmt.Errorf("loading %s: %w", pkgFile, err)
-        }
-        // 检查版本是否在支持列表内
-        matched, err := matchVersion(pkg.Versions, version)
-        if err != nil || matched == "" {
-            continue
-        }
-        // 加载版本覆盖（如果存在）
-        override := loadVersionOverride(pkgDir, matched) // nil if not exists
-        return &ResolvedPkg{
-            Def:      pkg,
-            Version:  matched,
-            Override: override,
-            RepoPath: root,
-        }, nil
-    }
-    return nil, fmt.Errorf("package %q@%q not found in any repository", name, version)
-}
-```
-
-### 配置合并器
-
-```go
-// internal/repository/merge.go
-
 type MergedBuildConfig struct {
-    System      string
+    System       string
     CMakeDefines []string
-    CXXFlags    []string
-    LinkFlags   []string
-    Profile     string
-    Patch       string
-}
-
-func Merge(
-    pkg     *PackageDef,
-    ver     *VersionOverride,   // nil = 无版本覆盖
-    global  *config.Global,
-    toolchain *Toolchain,
-    profile string,
-) *MergedBuildConfig {
-    out := &MergedBuildConfig{System: pkg.Build.System}
-
-    // 1. 包级基础
-    out.CMakeDefines = slices.Clone(pkg.Build.CMake.Defines)
-    out.CXXFlags     = slices.Clone(pkg.Build.CMake.CXXFlags)
-
-    // 2. Profile 叠加（debug/release）
-    if po, ok := pkg.Build.Profiles[profile]; ok {
-        out.CMakeDefines = append(out.CMakeDefines, po.Defines...)
-        out.CXXFlags     = append(out.CXXFlags,     po.CXXFlags...)
-    }
-
-    // 3. 编译器适配
-    if co, ok := pkg.Build.Compiler[toolchain.Kind]; ok {
-        out.CMakeDefines = append(out.CMakeDefines, co.Defines...)
-        out.CXXFlags     = append(out.CXXFlags,     co.CXXFlags...)
-    }
-
-    // 4. 平台适配
-    if po, ok := pkg.Build.Platform[currentOS()]; ok {
-        out.CMakeDefines = append(out.CMakeDefines, po.Defines...)
-        out.CXXFlags     = append(out.CXXFlags,     po.CXXFlags...)
-    }
-
-    // 5. 版本特定覆盖（完整替换对应字段，不是追加）
-    if ver != nil && ver.Build != nil {
-        if len(ver.Build.CMake.Defines) > 0 {
-            out.CMakeDefines = ver.Build.CMake.Defines  // 版本文件写了就全量替换
-        }
-        out.Patch = ver.Patch
-    }
-
-    // 6. 用户全局 flags（追加）
-    out.CXXFlags  = append(out.CXXFlags,  global.Build.Flags.CXXFlags...)
-    out.LinkFlags = append(out.LinkFlags, global.Build.Flags.LinkFlags...)
-
-    // 7. 环境变量（最高优先级，追加）
-    if envFlags := os.Getenv("CSTOW_CXX_FLAGS"); envFlags != "" {
-        out.CXXFlags = append(out.CXXFlags, strings.Fields(envFlags)...)
-    }
-
-    return out
+    CXXFlags     []string
+    LinkFlags    []string
+    IncludeDirs  []string
+    Libs         []string
+    Patch        string
+    BuildType    string
 }
 ```
 
----
+### 当前已经真正进入构建路径的部分
 
-## 七、外部 repository 目录扩展
+- `BuildType`
+- `CMakeDefines`
+- `CXXFlags`
+  - 作为 `CMAKE_CXX_FLAGS` 传给当前 CMake configure
+- `LinkFlags`
+  - 作为 `CMAKE_EXE_LINKER_FLAGS` / `CMAKE_SHARED_LINKER_FLAGS` / `CMAKE_MODULE_LINKER_FLAGS` 传给当前 CMake configure
+- `IncludeDirs`
+  - 仅 header-only 路径使用
 
-支持三种注册方式，全部在 `~/.cstow/config.toml` 中声明：
+### 当前还没有完整进入构建路径的部分
 
-```toml
-# 方式 1：本地文件系统路径（团队共享 NFS / 项目内）
-[[repositories]]
-name     = "team-internal"
-path     = "/mnt/shared/cstow-pkgs"
-priority = 10                        # 数字越小优先级越高，默认 50
+- `Patch`
+- `Libs`
+- `install_targets`
 
-# 方式 2：Git 仓库（自动 clone/pull 到本地缓存）
-[[repositories]]
-name     = "community"
-git      = "https://github.com/yourorg/cstow-pkgs.git"
-branch   = "main"
-auto_update = true                   # cstow update 时自动 git pull
+也就是说，Merge 算出来的 `CXXFlags` / `LinkFlags` 已经会进当前 CMake 安装链路，但 `Patch`、`Libs`、`install_targets` 还没有进入完整的安装校验闭环。
 
-# 方式 3：tar.gz 快照（离线环境）
-[[repositories]]
-name     = "offline-snapshot"
-archive  = "/opt/cstow-snapshot-2024.tar.gz"
+## 九、`cstow install` 当前工作流
+
+当前源码构建命令的行为是：
+
+```text
+cstow install fmt@^10
+
+1. 读取 ~/.cstow/config.toml
+2. 计算 repository 搜索路径
+3. Finder.Find("fmt", "^10")
+4. 探测 toolchain，并按 defaults.std 生成 ABI tag
+5. 检查本地 cache 是否已有安装结果
+6. Merge package + version override
+7. 拉取源码
+8. 使用 builder 进行安装
+9. 输出安装目录 ~/.cstow/cache/<name>/<version>/<abi_tag>/<build_type>/
 ```
 
-对应的 `cstow` 命令：
+### 当前 builder 的实际能力
 
-```bash
-# 添加外部 repository
-cstow repo add --name team --path /mnt/shared/cstow-pkgs
-cstow repo add --name community --git https://github.com/org/pkgs.git
+- CMake configure / build / install
+- `build.type = "static"` / `"shared"` 会切换 `BUILD_SHARED_LIBS`
+- `cstow install --type shared|static` 会优先于 recipe 自带的 `BUILD_SHARED_LIBS=...` define
+- merged `CXXFlags` / `LinkFlags` 会传给当前 CMake configure
+- `header-only` 复制 `include_dirs`
+- `cmd/install` 的集成测试已覆盖本地 static / shared 库安装，以及同 ABI 下 static / shared 分目录共存（见 `cmd/install_integration_test.go`）
 
-# 列出所有已注册的 repository 及其优先级
-cstow repo list
+### 当前 builder 还不支持或未打通的部分
 
-# 更新所有 git 类型的 repository
-cstow repo update
+- `archive` source 拉取
+- patch 自动应用
+- recipe 依赖递归构建
+- `make` / `autoconf` / `meson` / `custom`
+- 根据 `install_targets` 或 `artifacts.libs` 做安装验证
+- 将 `install` 结果自动接入项目的 `cstow_deps`
 
-# 在所有 repository 中搜索包
-cstow search googletest
-# 输出: [team-internal] googletest  1.14.0, 1.13.0
-#        [builtin]       googletest  1.14.0, 1.13.0, 1.12.1, 1.11.0
-```
+## 十、cache / lock / registry 的 `build_type`
 
----
+当前实现里，`build_type` 已经进入这几层：
 
-## 八、`cstow add` 完整工作流（串联所有层）
+- `cstow.toml`
+  - `[[dependencies]].build_type`
+- `cstow.lock`
+  - `[[package]].build_type`
+- 本地 cache
+  - 新路径为 `~/.cstow/cache/<name>/<version>/<abi_tag>/<build_type>/`
+  - 读取时兼容旧路径 `~/.cstow/cache/<name>/<version>/<abi_tag>/`
+- registry artifact key
+  - 新对象 key 为 `<pkg>/<version>/<abi_tag>/<build_type>.tar.zst`
+  - 下载时兼容旧 key `<pkg>/<version>/<abi_tag>.tar.zst`
+- manifest
+  - `artifact.build_type` 已写入元数据
+  - `fetch` 会在 manifest 可用时按 `abi_tag + build_type` 选 artifact；取不到 manifest 时再回退到旧 key 猜测
 
-```
-用户: cstow add googletest@^1.14
+当前优先级：
 
-  1. 读取 ~/.cstow/config.toml → 得到 searchPaths
-  2. Finder.Find("googletest", "^1.14")
-       → 命中 ~/.cstow/repository/g/googletest/package.toml
-       → 选出 matched = "1.14.0"
-       → 加载 versions/1.14.0.toml（存在）
-  3. Merge(pkg, ver, globalCfg, toolchain, profile)
-       → MergedBuildConfig{ cmake defines + flags + patches }
-  4. 检查 cache: ~/.cstow/cache/googletest/1.14.0/<abi_tag>/
-       → 命中 → 直接链接，结束
-       → 未命中 → 尝试从 registry 拉取预编译包
-           → 仍未命中 → 从 source.url clone 源码编译
-  5. 编译完成 → 写入 cache + 写入 cstow.lock
-  6. 向项目 cstow.toml 追加 [[dependencies]] 条目
-```
+1. CLI 显式覆盖，例如 `cstow install --type shared`
+2. `cstow.lock` 里的 `build_type`
+3. `cstow.toml` 中 dependency 的 `build_type`
+4. repository recipe 的 `build.type`
+5. 最后回落到 `static`
 
-这样项目开发者永远只需要写 `googletest = "^1.14"` 这一行，所有 "怎么编译 googletest" 的知识都沉淀在 repository 里，可以被所有项目复用，也方便团队统一维护构建配置。
+对 `fetch` 来说，只有前 2-3 层属于“显式配置”。如果 lock/config 里没有 `build_type`，当前实现会先按未指定状态查 cache / registry 旧路径；只有走到 source fallback 时，才由 repository recipe 决定最终构建类型。
+
+## 十一、推荐把 repository 系统理解成什么
+
+截至现在，最准确的理解方式是：
+
+- `repository` 已经具备 recipe 数据模型、查找、版本覆盖、基础 merge 和源码构建入口
+- 它适合用来验证 package recipe、做本地源码安装原型
+- 它还不是项目依赖管理主路径中的“自动透明 fallback”
+
+所以如果你要继续推进这个系统，优先级应该是：
+
+1. 打通 `add` / `fetch` / `build` 和 `install` 之间的关系
+2. 让 patch、archive、recipe 依赖递归真正生效
+3. 把 merged flags 和 artifact 校验真正接进 builder
+
+## 十二、与其他文档的关系
+
+- `AGENTS.md`
+  - 面向代理/开发协作，强调当前真实能力边界
+- `PLAN.md`
+  - 面向路线图，说明下一阶段优先级
+- `repo.md`
+  - 面向 repository 系统本身的“当前可用规格”
+
+如果三者冲突，以当前代码行为为准，并及时回写文档。

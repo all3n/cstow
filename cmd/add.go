@@ -30,8 +30,14 @@ var addCmd = &cobra.Command{
 		if source == "" {
 			source = "registry"
 		}
+		buildType, _ := cmd.Flags().GetString("build-type")
+		if buildType != "" {
+			if err := validateBuildType(buildType); err != nil {
+				return err
+			}
+		}
 
-		resolver.AddDependency(cfg, name, version, source)
+		resolver.AddDependency(cfg, name, version, source, buildType)
 
 		// Resolve first — only persist if resolution succeeds
 		cache := resolver.NewFSCache()
@@ -67,5 +73,6 @@ func parsePackageSpec(spec string) (name, version string) {
 
 func init() {
 	addCmd.Flags().String("source", "registry", "dependency source (registry|local|git)")
+	addCmd.Flags().String("build-type", "", "dependency build type (static|shared|header-only)")
 	rootCmd.AddCommand(addCmd)
 }

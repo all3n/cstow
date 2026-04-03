@@ -10,11 +10,11 @@ import (
 	"path"
 	"strings"
 
+	"github.com/BurntSushi/toml"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/BurntSushi/toml"
 
 	"github.com/all3n/cstow/internal/config"
 )
@@ -30,10 +30,43 @@ type Manifest struct {
 
 // Artifact is one pre-compiled binary artifact
 type Artifact struct {
-	ABITag string `toml:"abi_tag"`
-	SHA256 string `toml:"sha256"`
-	Size   int64  `toml:"size"`
-	URL    string `toml:"url,omitempty"`
+	ABITag    string `toml:"abi_tag"`
+	BuildType string `toml:"build_type,omitempty"`
+	SHA256    string `toml:"sha256"`
+	Size      int64  `toml:"size"`
+	URL       string `toml:"url,omitempty"`
+}
+
+// SelectArtifact chooses the best matching artifact from a manifest.
+// When buildType is empty, only legacy untyped artifacts are eligible.
+// When buildType is set, exact build-type matches win, then legacy untyped artifacts.
+func SelectArtifact(manifest *Manifest, abiTags []string, buildType string) (*Artifact, error) {
+	if manifest == nil {
+		return nil, fmt.Errorf("manifest is required")
+	}
+
+	find := func(abiTag, wantedBuildType string) *Artifact {
+		for i := range manifest.Artifacts {
+			artifact := &manifest.Artifacts[i]
+			if artifact.ABITag == abiTag && artifact.BuildType == wantedBuildType {
+				return artifact
+			}
+		}
+		return nil
+	}
+
+	for _, abiTag := range abiTags {
+		if buildType != "" {
+			if artifact := find(abiTag, buildType); artifact != nil {
+				return artifact, nil
+			}
+		}
+		if artifact := find(abiTag, ""); artifact != nil {
+			return artifact, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no artifact matches abi=%v build_type=%q", abiTags, buildType)
 }
 
 // S3Client wraps S3 operations for package registry
@@ -116,8 +149,16 @@ func NewS3Client(ctx context.Context, reg config.Registry) (*S3Client, error) {
 }
 
 // Upload uploads a package artifact to the registry
-func (c *S3Client) Upload(ctx context.Context, pkg, version, abiTag string, data []byte) error {
-	key := path.Join(c.prefix, pkg, version, abiTag+".tar.zst")
+func artifactObjectKey(prefix, pkg, version, abiTag, buildType string) string {
+	return path.Join(prefix, pkg, version, abiTag, buildType+".tar.zst")
+}
+
+func legacyArtifactObjectKey(prefix, pkg, version, abiTag string) string {
+	return path.Join(prefix, pkg, version, abiTag+".tar.zst")
+}
+
+func (c *S3Client) Upload(ctx context.Context, pkg, version, abiTag, buildType string, data []byte) error {
+	key := artifactObjectKey(c.prefix, pkg, version, abiTag, buildType)
 	_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(c.bucket),
 		Key:    aws.String(key),
@@ -151,17 +192,28 @@ func (c *S3Client) UploadManifest(ctx context.Context, pkg, version string, mani
 }
 
 // Download downloads a package artifact from the registry
-func (c *S3Client) Download(ctx context.Context, pkg, version, abiTag string) ([]byte, error) {
-	key := path.Join(c.prefix, pkg, version, abiTag+".tar.zst")
-	resp, err := c.client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(c.bucket),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("download %s: %w", key, err)
+func (c *S3Client) Download(ctx context.Context, pkg, version, abiTag, buildType string) ([]byte, error) {
+	keys := []string{legacyArtifactObjectKey(c.prefix, pkg, version, abiTag)}
+	if buildType != "" {
+		keys = append([]string{artifactObjectKey(c.prefix, pkg, version, abiTag, buildType)}, keys...)
 	}
-	defer resp.Body.Close()
-	return io.ReadAll(resp.Body)
+	var lastErr error
+	for _, key := range keys {
+		resp, err := c.client.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(c.bucket),
+			Key:    aws.String(key),
+		})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		defer resp.Body.Close()
+		return io.ReadAll(resp.Body)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("artifact not found")
+	}
+	return nil, fmt.Errorf("download %s@%s (%s, %s): %w", pkg, version, abiTag, buildType, lastErr)
 }
 
 // GetManifest downloads and parses the manifest for a package version

@@ -1,447 +1,176 @@
-以下是 **cstow** 的完整设计方案，分为 7 个可测试阶段，每阶段交付一个独立可运行的功能。
-
----
-
-## 整体架构概览## 分阶段开发路线图---
-
-## Phase 1 — CLI 骨架 + `cstow.toml` 解析 ✅ DONE
-
-**目标**：`cstow init` 创建项目，`cstow build` 调用系统 cmake，配置文件完整解析。
-
-### 目录结构
-
-```
-cstow/
-├── cmd/
-│   ├── root.go        # cobra root
-│   ├── init.go        # cstow init
-│   └── build.go       # cstow build
-├── internal/
-│   ├── config/
-│   │   └── config.go  # cstow.toml 解析
-│   └── project/
-│       └── scaffold.go
-├── main.go
-└── go.mod
-```
-
-### `cstow.toml` 完整结构设计
-
-```toml
-[package]
-name    = "mylib"
-version = "0.1.0"
-std     = "c++17"          # c++14 / c++17 / c++20 / c++23
-authors = ["you@example.com"]
-
-[build]
-type    = "library"        # library | executable | header-only
-sources = ["src/**/*.cpp"]
-include = ["include"]
-defines = ["MY_EXPORT=1"]
-
-# 多 profile
-[profile.debug]
-optimize = "0"
-debug    = true
-
-[profile.release]
-optimize = "3"
-lto      = true
-
-# 依赖声明
-[[dependencies]]
-name    = "fmt"
-version = "^10.0.0"
-source  = "registry"       # registry | local | git
-
-[[dependencies]]
-name    = "myutil"
-version = "*"
-source  = "local"
-path    = "../myutil"
-
-# 注册表后端（可多个）
-[[registry]]
-name     = "default"
-url      = "s3://my-bucket/cstow-registry"
-provider = "cloudflare"    # aws | cloudflare | minio | custom
-region   = "auto"
-# key/secret 从环境变量读取
-
-# 工具链 profile
-[toolchain]
-compiler = "auto"          # auto | gcc | clang | msvc
-minimum  = "gcc-11"
-sysroot  = ""              # 交叉编译 sysroot
-
-# CMake/Make 老项目集成
-[legacy]
-type       = "cmake"       # cmake | make | autoconf
-root       = "."
-extra_args = ["-DFOO=1"]
-```
-
-### 关键 Go 数据结构
-
-```go
-// internal/config/config.go
-package config
-
-type Config struct {
-    Package      Package            `toml:"package"`
-    Build        Build              `toml:"build"`
-    Profiles     map[string]Profile `toml:"profile"`
-    Dependencies []Dependency       `toml:"dependencies"`
-    Registries   []Registry         `toml:"registry"`
-    Toolchain    Toolchain          `toml:"toolchain"`
-    Legacy       *Legacy            `toml:"legacy"`
-}
-
-type Package struct {
-    Name    string   `toml:"name"`
-    Version string   `toml:"version"`
-    Std     string   `toml:"std"`
-    Authors []string `toml:"authors"`
-}
-
-type Dependency struct {
-    Name    string `toml:"name"`
-    Version string `toml:"version"`
-    Source  string `toml:"source"` // registry|local|git
-    Path    string `toml:"path"`
-    Git     string `toml:"git"`
-    Rev     string `toml:"rev"`
-}
-
-type Registry struct {
-    Name     string `toml:"name"`
-    URL      string `toml:"url"`
-    Provider string `toml:"provider"`
-    Region   string `toml:"region"`
-}
-```
-
-**测试点**：`cstow init myproject` 生成目录结构和 `cstow.toml`，`cstow build` 调用 cmake 成功编译 Hello World。
-
----
-
-## Phase 2 — 工具链检测 + 多编译器支持 ✅ DONE
-
-**目标**：自动发现本机 gcc/clang/msvc，通过 `--toolchain` 切换，生成正确 cmake 变量。
-
-```go
-// internal/toolchain/detect.go
-type Toolchain struct {
-    Kind     string   // gcc | clang | msvc | appleclang
-    Version  [3]int   // major.minor.patch
-    Path     string
-    CXX      string
-    CC       string
-    Sysroot  string
-    Target   string   // x86_64-linux-gnu / aarch64-linux-gnu ...
-    ABITag   string   // 由 Phase 5 填充
-}
-
-// 探测优先级: cstow.toml > CC/CXX env > PATH 扫描
-func Detect(cfg *config.Toolchain) (*Toolchain, error)
-```
-
-多编译器适配矩阵：
-
-| 编译器 | Std flag | 警告 flags | MSVC 特殊处理 |
-|--------|----------|-----------|---------------|
-| GCC / Clang | `-std=c++17` | `-Wall -Wextra` | — |
-| MSVC | `/std:c++17` | `/W4` | `/utf-8 /EHsc` |
-| Apple Clang | `-std=c++17` | `-Wall` | `-stdlib=libc++` |
-
-**测试点**：`cstow build --toolchain clang` 和 `--toolchain gcc` 分别生成带正确 `-DCMAKE_CXX_COMPILER=` 参数的 cmake 调用。
-
----
-
-## Phase 3 — 本地依赖管理 + `cstow.lock` ✅ DONE
-
-**目标**：`cstow add fmt@^10` 解析依赖树，生成 lock 文件，本地 cache 命中复用。
-
-### Lock 文件格式
-
-```toml
-# cstow.lock — 自动生成，勿手动编辑
-version = 1
-
-[[package]]
-name    = "fmt"
-version = "10.2.1"
-source  = "registry:default"
-sha256  = "abcdef..."
-abi_tag = "gcc13-cxx17-x86_64"
-
-[[package]]
-name    = "spdlog"
-version = "1.13.0"
-source  = "registry:default"
-sha256  = "fedcba..."
-deps    = ["fmt"]
-```
-
-### 依赖解析器
-
-```go
-// internal/resolver/resolver.go
-type Resolver struct {
-    cache    CacheStore
-    registry RegistryClient
-}
-
-// SAT-based semver 解析（Pub-grub 简化版）
-func (r *Resolver) Resolve(root []config.Dependency) (*LockFile, error)
-```
-
-**缓存目录结构**：`~/.cstow/cache/<name>/<version>/<abi_tag>/`，包含预编译产物 + 头文件。
-
-**测试点**：`cstow add spdlog` 解析传递依赖 fmt，生成 lock，第二次 build 命中本地 cache 跳过下载。
-
----
-
-## Phase 4 — S3 Registry：发布与下载 ✅ DONE
-
-**目标**：`cstow publish` 把当前包打包上传 S3，`cstow add` 从 S3 拉取预编译包。
-
-### S3 Registry 布局（约定大于配置）
-
-```
-<bucket>/
-  cstow-registry/
-    fmt/
-      10.2.1/
-        manifest.toml          # 包元数据
-        gcc13-cxx17-linux-x86_64.tar.zst   # 预编译包
-        gcc13-cxx17-linux-aarch64.tar.zst
-        headers.tar.zst        # header-only 包
-```
-
-### Cloudflare R2 / AWS S3 适配
-
-```go
-// internal/registry/s3client.go
-type S3Client struct {
-    // 使用 aws-sdk-go-v2，同时兼容 R2
-    // R2 endpoint: https://<accountid>.r2.cloudflarestorage.com
-    // 凭证: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
-    //       或 cstow.toml [registry] 中指定的 env 变量名
-}
-
-// 支持 presigned URL 下载（无需 client 有 bucket 写权限）
-func (c *S3Client) Download(pkg, version, abiTag string) (io.Reader, error)
-func (c *S3Client) Upload(pkg, version, abiTag string, r io.Reader) error
-func (c *S3Client) ListVersions(pkg string) ([]string, error)
-```
-
-**manifest.toml 示例**：
-
-```toml
-name    = "fmt"
-version = "10.2.1"
-std     = "c++17"
-license = "MIT"
-
-[[artifact]]
-abi_tag  = "gcc13-cxx17-linux-x86_64"
-sha256   = "abc..."
-size     = 1234567
-url      = "https://pub-xxx.r2.dev/..."   # 可选 CDN 直链
-```
-
-**测试点**：在本地 MinIO（或 CF R2 staging）上 `cstow publish`，换机器 `cstow add` 拉取，build 成功。
-
----
-
-## Phase 5 — ABI 管理 + 多 triplet ✅ DONE
-
-这是 C++ 工具链最复杂的部分，cstow 通过 **ABI Tag** 统一描述。
-
-### ABI Tag 编码规则
-
-```
-<compiler><major>-cxx<std_year>-<stdlib>-<os>-<arch>[-<extra>]
-
-示例:
-  gcc13-cxx17-libstdc-linux-x86_64
-  clang17-cxx20-libcxx-macos-arm64
-  msvc193-cxx17-msvcrt-windows-x64
-  clang16-cxx17-libcxx-linux-aarch64-android29  # 交叉编译
-```
-
-```go
-// internal/abi/abi.go
-type ABITag struct {
-    Compiler string  // gcc | clang | msvc | appleclang
-    CompVer  int     // major version
-    CxxStd   int     // 14 17 20 23
-    Stdlib   string  // libstdc | libcxx | msvcrt
-    OS       string  // linux | macos | windows | android | ios
-    Arch     string  // x86_64 | aarch64 | arm | wasm32
-    Extra    string  // android api level, etc.
-}
-
-func (t ABITag) String() string
-func Parse(s string) (ABITag, error)
-func Compatible(have, need ABITag) bool  // 兼容性检查
-```
-
-### 兼容性矩阵（核心逻辑）
-
-```go
-func Compatible(have, need ABITag) bool {
-    // 1. OS 和 Arch 必须完全一致
-    // 2. stdlib 必须相同（libstdc++ 和 libc++ 二进制不兼容）
-    // 3. C++ std 可以向上兼容（have.CxxStd >= need.CxxStd）
-    // 4. 编译器版本：同族向上兼容（gcc12 可满足 gcc11 的包）
-    // 5. MSVC: 仅同主版本兼容
-}
-```
-
-**测试点**：`cstow check-abi` 报告当前环境 ABI tag，`cstow add` 时自动选择兼容包，不兼容时给出明确错误信息而非崩溃。
-
----
-
-## Phase 6 — CMake / Make 老项目一键集成 ✅ DONE
-
-**目标**：存量项目零修改接入 cstow 依赖管理。
-
-### 两种接入模式
-
-**模式 A：完全包装**（老项目根目录加一个 `cstow.toml`）
-
-```toml
-[package]
-name = "legacy-engine"
-version = "2.0.0"
-
-[legacy]
-type = "cmake"
-root = "."
-extra_args = ["-DBUILD_SHARED_LIBS=OFF"]
-
-# 声明依赖，cstow 负责下载，注入 cmake PREFIX
-[[dependencies]]
-name    = "zlib"
-version = "^1.3"
-```
-
-cstow 工作流：拉取依赖 → 写入 `CMAKE_PREFIX_PATH` → 调用原生 cmake。
-
-**模式 B：migrate 扫描**（生成 cstow 原生配置）
-
-```bash
-cstow migrate --from cmake
-```
-
-扫描 `CMakeLists.txt` 的 `find_package()` / `FetchContent_Declare()` 调用，自动生成对应 `[[dependencies]]` 条目和等价 `cstow.toml`。
-
-```go
-// internal/legacy/cmake_scanner.go
-type CMakeScanner struct{}
-
-func (s *CMakeScanner) Scan(cmakePath string) ([]config.Dependency, error) {
-    // 解析 find_package(Foo VERSION x.y.z REQUIRED)
-    // 解析 FetchContent_Declare(foo GIT_REPOSITORY ... GIT_TAG ...)
-    // 输出建议的 [[dependencies]] 列表
-}
-```
-
-**测试点**：克隆一个真实 CMake 开源项目，`cstow migrate`，得到 `cstow.toml`，`cstow build` 编译成功。
-
----
-
-## Phase 7 — Workspace + CI + 插件
-
-**workspace 多包管理**（Cargo workspace 同款）：
-
-```toml
-# 根目录 cstow.toml
-[workspace]
-members = ["engine", "renderer", "tools/*"]
-```
-
-**GitHub Actions 一键集成**：
-
-```yaml
-# cstow ci --emit github 自动生成
-- uses: actions/cache@v4
-  with:
-    path: ~/.cstow/cache
-    key: cstow-${{ matrix.toolchain }}-${{ hashFiles('cstow.lock') }}
-
-- run: cstow build --profile release --toolchain ${{ matrix.toolchain }}
-  env:
-    CSTOW_REGISTRY_KEY: ${{ secrets.R2_ACCESS_KEY }}
-    CSTOW_REGISTRY_SECRET: ${{ secrets.R2_SECRET }}
-```
-
-**hooks 扩展点**（`cstow.toml`）：
-
-```toml
-[hooks]
-pre-build  = "scripts/codegen.sh"
-post-build = "scripts/sign.sh"
-pre-publish = "scripts/test-all.sh"
-```
-
----
-
-## 关键技术选型
-
-| 组件 | 选型 | 理由 |
-|------|------|------|
-| CLI 框架 | `spf13/cobra` + `spf13/viper` | 业界标准，子命令 + 配置绑定 |
-| TOML 解析 | `BurntSushi/toml` | 最成熟的 Go TOML 库 |
-| S3 客户端 | `aws/aws-sdk-go-v2` | 兼容所有 S3 协议实现（含 R2） |
-| Semver | `Masterminds/semver/v3` | 完整 semver 2.0 支持 |
-| 压缩格式 | `.tar.zst`（zstd） | 比 gz 快 3–5 倍，`klauspost/compress` |
-| 并行下载 | `golang.org/x/sync/errgroup` | 并发依赖拉取 |
-| 测试 | `stretchr/testify` | 标准断言库 |
-| 进度条 | `schollz/progressbar/v3` | 下载 / 编译进度展示 |
-
----
-
-## 环境变量约定
-
-```bash
-# 注册表鉴权
-CSTOW_REGISTRY_KEY=...
-CSTOW_REGISTRY_SECRET=...
-CSTOW_REGISTRY_URL=https://<id>.r2.cloudflarestorage.com
-
-# 工具链覆盖
-CSTOW_CXX=clang++
-CSTOW_CC=clang
-CSTOW_SYSROOT=/path/to/sysroot
-
-# 缓存目录
-CSTOW_CACHE_DIR=~/.cstow/cache
-
-# CI 模式（禁用交互，失败即退出）
-CSTOW_CI=1
-```
-
----
-
-## 快速启动（Phase 1 可立即验证）
-
-```bash
-git clone https://github.com/all3n/cstow.git
-cd cstow
-go build -o cstow .
-
-# 新建项目
-./cstow init hello-cpp
-cd hello-cpp
-cat cstow.toml
-
-# 构建（依赖系统 cmake）
-./cstow build
-./build/hello-cpp
-```
-
-每个阶段都可以独立 PR + 集成测试，Phase 1–2 完成后已经可以作为 cmake 的前端使用，后续阶段在此基础上叠加能力，不需要重写
+# cstow 路线图
+
+更新时间：2026-04-02
+
+这份计划不再沿用旧版“Phase 1-7 全部完成”的写法，而是按当前代码现实拆成三类内容：
+
+- 已落地能力
+- 已实现但尚未闭环的能力
+- 下一阶段的真实优先级
+
+目标是让后续开发围绕“把现有能力打通”推进，而不是继续在未收敛的基础上横向扩张。
+
+## 一、当前项目状态
+
+### 1. 已落地能力
+
+- CLI 已具备基础命令：`init`、`build`、`add`、`fetch`、`publish`、`install`、`migrate`、`ci`、`workspace`、`checkabi`
+- `cstow.toml` 解析已支持项目配置、workspace、hooks 等字段
+- `~/.cstow/config.toml` 全局配置已支持 repository 路径、缓存、工具链偏好等基础能力
+- 工具链检测和 ABI 计算已可用
+- `cstow.lock` 的基础生成与读取已可用，并已记录 dependency `build_type`
+- S3/R2/MinIO 风格 registry 的上传、下载、manifest 读写已具备基础实现
+- `internal/repository/` 已实现 package definition、版本匹配、override 加载、merge 逻辑
+- `cstow install` 已可基于 repository recipe 走源码构建路径
+- `cmd/install` 当前已有集成测试覆盖 static / shared CMake 库的本地安装
+- cache / registry artifact key 已按 `<abi>/<build_type>` 区分，旧路径和旧 key 仍可回读
+- `workspace`、`legacy migrate`、`hooks`、`.tar.zst` 打包/解包 已有初版实现
+
+### 2. 已实现但未闭环
+
+这些是目前最容易误导后续开发的部分。
+
+- `add` 仍然只是更新项目依赖和 lock，不会校验依赖是否真的存在于 repository 或 registry
+- `build` 构建的是“当前项目”，不会直接消费 repository recipe 来自动构建第三方依赖
+- `fetch` 已支持 registry 缺失时回退到 repository source build，并会在 manifest 可用时按 `abi + build_type` 选 artifact
+- `install` 虽然会 merge repository 配置，但还没有递归构建 recipe 依赖
+- version override 中的 `patch` 已进入 merged config，但实际构建前没有应用补丁
+- `archive` 源码拉取还没有实现，当前基本只支持 git source
+- merged `CXXFlags` / `LinkFlags` 已进入当前 `install` 的 CMake configure 链路，但 `artifacts` / `install_targets` 还没有形成安装结果校验闭环
+- `build` 命令对项目 `build.defines`、`build.sources`、profile/hook 生命周期的利用还比较浅
+- `fetch` 已开始使用 manifest 做 artifact 选择，但下载后校验和验证仍未完成
+- workspace 目前是串行构建，没有成员依赖排序、共享 lock、并行调度
+
+### 3. 当前不建议继续扩张的方向
+
+在主路径没闭环前，这些方向应该降级处理。
+
+- 新增更多构建后端，如 `meson` / `autoconf` / `custom`
+- 继续扩展更多 CLI 子命令，而不先统一现有依赖流
+- 把 repository 远程同步、自动更新、团队分发做得很重
+- 在缺少稳定 ABI / manifest 选择逻辑前继续强化 registry 复杂特性
+
+## 二、核心判断
+
+项目方向本身没有问题，但计划内容需要调整。
+
+旧计划的问题主要有两个：
+
+1. 它把很多“模块已存在”的内容等同于“用户路径已打通”。
+2. 它没有把 `registry` 和 `repository` 两条依赖获取路径的关系讲清楚。
+
+当前最重要的不是再增加功能点，而是明确并打通下面这条主链路：
+
+`项目声明依赖 -> 解析 -> 选择预编译或源码构建 -> 放入本地缓存/依赖前缀 -> 项目构建成功`
+
+## 三、建议的新阶段划分
+
+## Phase A — 打通主用户路径
+
+**目标**：让用户可以稳定完成“声明依赖、拿到依赖、构建项目”。
+
+### 重点任务
+
+- 明确依赖获取策略：
+  - 先尝试 registry 预编译包
+  - 缺失时回退到 repository recipe + source build
+- 让 `add` 在写入配置前至少做基本校验：
+  - registry 中是否存在版本
+  - 或 repository 中是否存在 recipe
+- 让 `build` 对缺失依赖给出明确动作建议，或直接触发受控的补全流程
+- 补齐项目构建路径中对 profile、defines、hooks 的使用
+- 增加覆盖真实命令链路的集成测试
+
+### 完成标准
+
+- 一个最小示例项目可以稳定跑通：
+  - `cstow init`
+  - `cstow add`
+  - `cstow fetch` 或 `cstow install`
+  - `cstow build`
+
+## Phase B — 完成 repository source-build MVP
+
+**目标**：把 `cstow install` 从“能跑一部分 recipe”提升为可维护的最小成品。
+
+### 重点任务
+
+- 实现 `archive` source 下载和解包
+- 在源码构建前应用 version / compiler / platform patch
+- 递归处理 repository package 自身依赖
+- 让 merged `CXXFlags` / `LinkFlags` 在 `build` / `install` 两条链路上保持一致，并补上安装结果校验
+- 校验 `artifacts` / `install_targets` 是否与安装结果一致
+- 改善构建失败时的错误信息和临时目录排查体验
+
+### 完成标准
+
+- git source 和 archive source 都能安装
+- recipe 依赖和 patch 都能生效
+- 至少覆盖 `static`、`shared`、`header-only` 三种常见类型
+
+## Phase C — 强化 registry、lock 与缓存
+
+**目标**：让预编译分发路径足够可靠。
+
+### 重点任务
+
+- lock 中写入并使用 ABI 信息
+- 根据 manifest 做 artifact 选择，而不是直接假定 `abiTag.tar.zst`
+- 下载后做 SHA256 校验
+- 明确多 registry、只读 registry、profile 凭证的行为
+- 实现 cache 清理策略，真正利用全局配置中的缓存参数
+
+### 完成标准
+
+- 同一包多 ABI 产物可正确选择
+- fetch 不再依赖“默认 abiTag”猜测
+- 缓存能被检查、复用和清理
+
+## Phase D — workspace 与开发体验
+
+**目标**：把现有的辅助能力从“占位版”提升到实际可用。
+
+### 重点任务
+
+- workspace 成员依赖排序
+- workspace 并行构建与失败收敛
+- 统一 workspace 下的 lock / cache / build 输出体验
+- 完善 `migrate` 生成结果和 `ci` 模板
+- 补充文档与示例仓库布局
+
+### 完成标准
+
+- 多成员 workspace 可以稳定构建
+- CI 模板能直接服务当前主路径
+- 文档能解释 registry 与 repository 的职责边界
+
+## Phase E — 扩展项
+
+这些内容应在前四个阶段稳定后再推进。
+
+- `make` / `autoconf` / `meson` / `custom` builder
+- repository 远程同步、镜像、自动更新
+- 更细粒度的 package authoring / lint / doctor 命令
+- Windows/MSVC 的更完整端到端验证
+
+## 四、近期建议执行顺序
+
+如果只看接下来一到两个迭代，建议按下面顺序推进：
+
+1. 明确并实现“预编译优先，源码回退”的依赖获取策略
+2. 补齐 `build` / `install` 中对 merged flags、hooks、缺失依赖处理的闭环
+3. 完成 archive source、patch 应用、recipe 依赖递归
+4. 完成 manifest/ABI/校验和驱动的 fetch 逻辑
+5. 最后再处理 workspace 并行、更多 builder、更多 CLI 扩展
+
+## 五、文档维护要求
+
+后续更新计划时，遵守下面规则：
+
+- 不要把“模块存在”写成“功能完成”
+- 不要把 design doc 里的能力默认视为代码已实现
+- 每个阶段必须同时写清：
+  - 目标用户路径
+  - 当前阻塞点
+  - 完成标准
+- `AGENTS.md`、`PLAN.md`、`repo.md` 三者需要保持语义一致

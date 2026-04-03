@@ -20,13 +20,14 @@ type LockFile struct {
 
 // LockEntry is one resolved dependency in the lock file
 type LockEntry struct {
-	Name    string `toml:"name"`
-	Version string `toml:"version"`
-	Source  string `toml:"source"`
-	SHA256  string `toml:"sha256"`
-	ABITag  string `toml:"abi_tag,omitempty"`
-	Deps    []string `toml:"deps,omitempty"`
-	Path    string `toml:"path,omitempty"`
+	Name      string   `toml:"name"`
+	Version   string   `toml:"version"`
+	Source    string   `toml:"source"`
+	SHA256    string   `toml:"sha256"`
+	ABITag    string   `toml:"abi_tag,omitempty"`
+	BuildType string   `toml:"build_type,omitempty"`
+	Deps      []string `toml:"deps,omitempty"`
+	Path      string   `toml:"path,omitempty"`
 }
 
 // RegistryClient fetches available versions for a package.
@@ -36,8 +37,9 @@ type RegistryClient interface {
 
 // LocalCache is the local package cache
 type LocalCache interface {
-	Has(name, version, abiTag string) bool
-	Path(name, version, abiTag string) string
+	Has(name, version, abiTag, buildType string) bool
+	Path(name, version, abiTag, buildType string) string
+	LegacyPath(name, version, abiTag string) string
 }
 
 // Resolver resolves dependencies using semver constraints
@@ -127,10 +129,11 @@ func (r *Resolver) resolveRecursive(deps []config.Dependency, locked map[string]
 		}
 
 		locked[dep.Name] = LockEntry{
-			Name:    dep.Name,
-			Version: chosenVer,
-			Source:  source,
-			Path:    dep.Path,
+			Name:      dep.Name,
+			Version:   chosenVer,
+			Source:    source,
+			BuildType: dep.BuildType,
+			Path:      dep.Path,
 		}
 	}
 	return nil
@@ -186,16 +189,17 @@ func SaveLock(path string, lf *LockFile) error {
 }
 
 // AddDependency adds a dependency to cstow.toml and regenerates the lock
-func AddDependency(cfg *config.Config, name, version, source string) {
+func AddDependency(cfg *config.Config, name, version, source, buildType string) {
 	for _, d := range cfg.Dependencies {
 		if d.Name == name {
 			return // already present
 		}
 	}
 	cfg.Dependencies = append(cfg.Dependencies, config.Dependency{
-		Name:    name,
-		Version: version,
-		Source:  source,
+		Name:      name,
+		Version:   version,
+		Source:    source,
+		BuildType: buildType,
 	})
 }
 
@@ -213,12 +217,27 @@ func NewFSCache() *FSCache {
 	return &FSCache{Root: root}
 }
 
-func (c *FSCache) Has(name, version, abiTag string) bool {
-	p := c.Path(name, version, abiTag)
-	_, err := os.Stat(p)
-	return err == nil
+func (c *FSCache) Has(name, version, abiTag, buildType string) bool {
+	paths := []string{c.Path(name, version, abiTag, buildType)}
+	if buildType != "" {
+		paths = append(paths, c.LegacyPath(name, version, abiTag))
+	}
+	for _, p := range paths {
+		_, err := os.Stat(p)
+		if err == nil {
+			return true
+		}
+	}
+	return false
 }
 
-func (c *FSCache) Path(name, version, abiTag string) string {
+func (c *FSCache) Path(name, version, abiTag, buildType string) string {
+	if buildType == "" {
+		return c.LegacyPath(name, version, abiTag)
+	}
+	return filepath.Join(c.Root, name, version, abiTag, buildType)
+}
+
+func (c *FSCache) LegacyPath(name, version, abiTag string) string {
 	return filepath.Join(c.Root, name, version, abiTag)
 }

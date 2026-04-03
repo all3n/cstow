@@ -95,6 +95,16 @@ func TestResolveWithRegistry(t *testing.T) {
 	assert.Equal(t, "10.2.1", lf.Packages[0].Version)
 }
 
+func TestResolvePropagatesBuildType(t *testing.T) {
+	r := New(nil, nil)
+	lf, err := r.Resolve([]config.Dependency{
+		{Name: "fmt", Version: "^10.0.0", Source: "local", BuildType: "shared"},
+	})
+	require.NoError(t, err)
+	require.Len(t, lf.Packages, 1)
+	assert.Equal(t, "shared", lf.Packages[0].BuildType)
+}
+
 func TestLockFileRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	lockPath := filepath.Join(dir, "cstow.lock")
@@ -102,7 +112,7 @@ func TestLockFileRoundTrip(t *testing.T) {
 	lf := &LockFile{
 		Version: 1,
 		Packages: []LockEntry{
-			{Name: "fmt", Version: "10.2.1", Source: "registry:default", SHA256: "abc123"},
+			{Name: "fmt", Version: "10.2.1", Source: "registry:default", SHA256: "abc123", BuildType: "shared"},
 			{Name: "spdlog", Version: "1.13.0", Source: "registry:default", Deps: []string{"fmt"}},
 		},
 	}
@@ -114,31 +124,63 @@ func TestLockFileRoundTrip(t *testing.T) {
 	assert.Equal(t, len(lf.Packages), len(loaded.Packages))
 	assert.Equal(t, "fmt", loaded.Packages[0].Name)
 	assert.Equal(t, "10.2.1", loaded.Packages[0].Version)
+	assert.Equal(t, "shared", loaded.Packages[0].BuildType)
+}
+
+func TestLoadLockLegacyWithoutBuildType(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "cstow.lock")
+	require.NoError(t, os.WriteFile(lockPath, []byte(`# cstow.lock — auto-generated, do not edit
+
+version = 1
+
+[[package]]
+name = "fmt"
+version = "10.2.1"
+source = "registry:default"
+sha256 = "abc123"
+`), 0o644))
+
+	loaded, err := LoadLock(lockPath)
+	require.NoError(t, err)
+	require.Len(t, loaded.Packages, 1)
+	assert.Equal(t, "", loaded.Packages[0].BuildType)
 }
 
 func TestFSCache(t *testing.T) {
 	dir := t.TempDir()
 	cache := &FSCache{Root: dir}
 
-	assert.False(t, cache.Has("fmt", "10.2.1", "gcc13-cxx17-x86_64"))
+	assert.False(t, cache.Has("fmt", "10.2.1", "gcc13-cxx17-x86_64", "shared"))
 
-	p := cache.Path("fmt", "10.2.1", "gcc13-cxx17-x86_64")
+	p := cache.Path("fmt", "10.2.1", "gcc13-cxx17-x86_64", "shared")
 	require.NoError(t, os.MkdirAll(p, 0o755))
-	assert.True(t, cache.Has("fmt", "10.2.1", "gcc13-cxx17-x86_64"))
+	assert.True(t, cache.Has("fmt", "10.2.1", "gcc13-cxx17-x86_64", "shared"))
+	assert.Equal(t, filepath.Join(dir, "fmt", "10.2.1", "gcc13-cxx17-x86_64", "shared"), p)
+}
+
+func TestFSCacheLegacyFallback(t *testing.T) {
+	dir := t.TempDir()
+	cache := &FSCache{Root: dir}
+
+	legacy := cache.LegacyPath("fmt", "10.2.1", "gcc13-cxx17-x86_64")
+	require.NoError(t, os.MkdirAll(legacy, 0o755))
+	assert.True(t, cache.Has("fmt", "10.2.1", "gcc13-cxx17-x86_64", "shared"))
 }
 
 func TestAddDependency(t *testing.T) {
 	cfg := &config.Config{}
-	AddDependency(cfg, "fmt", "^10.0.0", "registry")
+	AddDependency(cfg, "fmt", "^10.0.0", "registry", "shared")
 	assert.Equal(t, 1, len(cfg.Dependencies))
 	assert.Equal(t, "fmt", cfg.Dependencies[0].Name)
+	assert.Equal(t, "shared", cfg.Dependencies[0].BuildType)
 
 	// Adding again should not duplicate
-	AddDependency(cfg, "fmt", "^10.0.0", "registry")
+	AddDependency(cfg, "fmt", "^10.0.0", "registry", "shared")
 	assert.Equal(t, 1, len(cfg.Dependencies))
 
 	// Different package
-	AddDependency(cfg, "spdlog", "^1.12.0", "registry")
+	AddDependency(cfg, "spdlog", "^1.12.0", "registry", "static")
 	assert.Equal(t, 2, len(cfg.Dependencies))
 }
 

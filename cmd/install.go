@@ -3,14 +3,9 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"runtime"
 
-	"github.com/all3n/cstow/internal/abi"
-	"github.com/all3n/cstow/internal/builder"
 	"github.com/all3n/cstow/internal/config"
-	"github.com/all3n/cstow/internal/repository"
 	"github.com/all3n/cstow/internal/resolver"
-	"github.com/all3n/cstow/internal/toolchain"
 	"github.com/spf13/cobra"
 )
 
@@ -22,91 +17,54 @@ var installCmd = &cobra.Command{
 		profile, _ := cmd.Flags().GetString("profile")
 		force, _ := cmd.Flags().GetBool("force")
 		buildType, _ := cmd.Flags().GetString("type")
-
-		if !builder.IsCmakeInstalled() {
-			return fmt.Errorf("cmake not found on PATH — install cmake first")
-		}
+		toolchainName, _ := cmd.Flags().GetString("toolchain")
 
 		name, versionConstraint := parsePackageSpec(args[0])
-
-		// 1. Load global config and find package definition
-		g, err := config.LoadGlobal()
-		if err != nil {
-			return fmt.Errorf("load global config: %w", err)
+		var projectCfg *config.Config
+		if _, err := os.Stat("cstow.toml"); err == nil {
+			projectCfg, err = config.Load("cstow.toml")
+			if err != nil {
+				return err
+			}
 		}
 
-		finder := repository.NewFinderWithPaths(g.RepositoryPaths())
-		pkg, err := finder.Find(name, versionConstraint)
+		var lockFile *resolver.LockFile
+		if _, err := os.Stat("cstow.lock"); err == nil {
+			lockFile, _ = resolver.LoadLock("cstow.lock")
+		}
+
+		if buildType == "" {
+			lockEntry, _ := lockEntryByName(lockFile, name)
+			buildType = configuredBuildType(name, lockEntry, projectCfg)
+		}
+		if buildType != "" {
+			if err := validateBuildType(buildType); err != nil {
+				return err
+			}
+		}
+
+		ctx, err := newRepositoryInstallContext(projectCfg, profile, toolchainName)
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf(">> found %s %s in %s\n", name, pkg.Version, pkg.RepoPath)
-
-		// 2. Detect toolchain + ABI
-		tc, err := toolchain.Detect(&config.Toolchain{
-			Compiler: g.Toolchain.Prefer,
-		})
-		if err != nil {
-			return fmt.Errorf("detect toolchain: %w", err)
-		}
-
-		abiTag := abi.DetectFromToolchain(tc.Kind, tc.Version, g.Defaults.Std)
 		fmt.Printf(">> toolchain: %s %d.%d.%d | abi: %s\n",
-			tc.Kind, tc.Version[0], tc.Version[1], tc.Version[2], abiTag.String())
+			ctx.Toolchain.Kind, ctx.Toolchain.Version[0], ctx.Toolchain.Version[1], ctx.Toolchain.Version[2], ctx.detectedABITag())
 
-		// 3. Compute cache path and check if already installed
-		cache := resolver.NewFSCache()
-		installDir := cache.Path(name, pkg.Version, abiTag.String())
-
-		if !force {
-			if cache.Has(name, pkg.Version, abiTag.String()) {
-				fmt.Printf(">> already installed: %s\n", installDir)
-				return nil
-			}
-		}
-
-		// 4. Merge build config
-		merged := repository.Merge(pkg.Def, pkg.Override, tc.Kind, profile, runtime.GOOS)
-
-		// CLI --type overrides the package-defined build type
-		if buildType != "" {
-			merged.BuildType = buildType
-		}
-		if merged.BuildType == "" {
-			merged.BuildType = "static" // default
-		}
-
-		// 5. Fetch source
-		fmt.Printf(">> fetching source: %s\n", pkg.Def.Source.URL)
-		tmpDir, err := os.MkdirTemp("", "cstow-build-*")
-		if err != nil {
-			return fmt.Errorf("create temp dir: %w", err)
-		}
-		defer os.RemoveAll(tmpDir)
-
-		sourcePath, err := repository.FetchSource(pkg.Def.Source, pkg.Version, tmpDir)
-		if err != nil {
-			return fmt.Errorf("fetch source: %w", err)
-		}
-
-		// 6. Build
-		fmt.Printf(">> building %s %s (%s)\n", name, pkg.Version, profile)
-		result, err := builder.Build(builder.Options{
-			SourcePath: sourcePath,
-			InstallDir: installDir,
-			Config:     merged,
-			Toolchain:  tc,
-			Profile:    profile,
-			Jobs:       builder.GuessJobs(),
-			Stdout:     os.Stdout,
-			Stderr:     os.Stderr,
+		result, err := installFromRepository(name, versionConstraint, repositoryInstallOptions{
+			Context:   ctx,
+			BuildType: buildType,
+			Force:     force,
 		})
 		if err != nil {
-			return fmt.Errorf("build failed: %w", err)
+			return err
+		}
+		if result.Cached {
+			fmt.Printf(">> already installed: %s\n", result.InstallDir)
+			return nil
 		}
 
-		fmt.Printf(">> installed %s %s → %s\n", name, pkg.Version, result.InstallDir)
+		fmt.Printf(">> installed %s %s → %s\n", name, result.Version, result.InstallDir)
 		return nil
 	},
 }
@@ -115,5 +73,6 @@ func init() {
 	installCmd.Flags().StringP("profile", "p", "debug", "build profile (debug|release)")
 	installCmd.Flags().Bool("force", false, "rebuild even if already cached")
 	installCmd.Flags().String("type", "", "build type: static|shared|header-only (overrides package default)")
+	installCmd.Flags().String("toolchain", "auto", "compiler to use when building from source (auto|gcc|clang|msvc)")
 	rootCmd.AddCommand(installCmd)
 }

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/all3n/cstow/internal/repository"
 	"github.com/all3n/cstow/internal/toolchain"
@@ -32,6 +33,9 @@ type Result struct {
 // Build runs cmake configure -> build -> install.
 // For header-only libraries, skips cmake entirely and copies headers.
 func Build(opts Options) (*Result, error) {
+	if opts.Config == nil {
+		return nil, fmt.Errorf("build config is required")
+	}
 	if opts.Stdout == nil {
 		opts.Stdout = os.Stdout
 	}
@@ -42,7 +46,6 @@ func Build(opts Options) (*Result, error) {
 		opts.Jobs = runtime.NumCPU()
 	}
 
-	// header-only: skip cmake, just copy include dirs
 	if opts.Config.BuildType == "header-only" {
 		return installHeaderOnly(opts)
 	}
@@ -52,37 +55,10 @@ func Build(opts Options) (*Result, error) {
 		return nil, fmt.Errorf("create build dir: %w", err)
 	}
 
-	cmakeType := "Debug"
-	if opts.Profile == "release" {
-		cmakeType = "Release"
-	}
-
-	// -- Configure --
-	cmakeArgs := []string{
-		"-S", opts.SourcePath,
-		"-B", buildDir,
-		fmt.Sprintf("-DCMAKE_BUILD_TYPE=%s", cmakeType),
-		fmt.Sprintf("-DCMAKE_INSTALL_PREFIX=%s", opts.InstallDir),
-	}
-	if opts.Toolchain != nil {
-		cmakeArgs = append(cmakeArgs, opts.Toolchain.CMakeFlags()...)
-	}
-	// Auto-inject BUILD_SHARED_LIBS based on build type
-	switch opts.Config.BuildType {
-	case "shared":
-		cmakeArgs = append(cmakeArgs, "-DBUILD_SHARED_LIBS=ON")
-	case "static":
-		cmakeArgs = append(cmakeArgs, "-DBUILD_SHARED_LIBS=OFF")
-	}
-	for _, d := range opts.Config.CMakeDefines {
-		cmakeArgs = append(cmakeArgs, "-D"+d)
-	}
-
-	if err := runCmake(cmakeArgs, opts.Stdout, opts.Stderr); err != nil {
+	if err := runCmake(configureArgs(opts, buildDir), opts.Stdout, opts.Stderr); err != nil {
 		return nil, fmt.Errorf("cmake configure: %w", err)
 	}
 
-	// -- Build --
 	buildArgs := []string{
 		"--build", buildDir,
 		"--", fmt.Sprintf("-j%d", opts.Jobs),
@@ -90,13 +66,62 @@ func Build(opts Options) (*Result, error) {
 	if err := runCmake(buildArgs, opts.Stdout, opts.Stderr); err != nil {
 		return nil, fmt.Errorf("cmake build: %w", err)
 	}
-	// -- Install --
+
 	installArgs := []string{"--install", buildDir}
 	if err := runCmake(installArgs, opts.Stdout, opts.Stderr); err != nil {
 		return nil, fmt.Errorf("cmake install: %w", err)
 	}
 
 	return &Result{InstallDir: opts.InstallDir}, nil
+}
+
+func configureArgs(opts Options, buildDir string) []string {
+	cmakeType := "Debug"
+	if opts.Profile == "release" {
+		cmakeType = "Release"
+	}
+
+	args := []string{
+		"-S", opts.SourcePath,
+		"-B", buildDir,
+		fmt.Sprintf("-DCMAKE_BUILD_TYPE=%s", cmakeType),
+		fmt.Sprintf("-DCMAKE_INSTALL_PREFIX=%s", opts.InstallDir),
+	}
+	if opts.Toolchain != nil {
+		args = append(args, opts.Toolchain.CMakeFlags()...)
+	}
+
+	buildSharedDefine := ""
+	for _, d := range opts.Config.CMakeDefines {
+		if strings.HasPrefix(d, "BUILD_SHARED_LIBS=") {
+			buildSharedDefine = d
+			continue
+		}
+		args = append(args, "-D"+d)
+	}
+	switch opts.Config.BuildType {
+	case "shared":
+		buildSharedDefine = "BUILD_SHARED_LIBS=ON"
+	case "static":
+		buildSharedDefine = "BUILD_SHARED_LIBS=OFF"
+	}
+	if buildSharedDefine != "" {
+		args = append(args, "-D"+buildSharedDefine)
+	}
+
+	if len(opts.Config.CXXFlags) > 0 {
+		args = append(args, fmt.Sprintf("-DCMAKE_CXX_FLAGS=%s", strings.Join(opts.Config.CXXFlags, " ")))
+	}
+	if len(opts.Config.LinkFlags) > 0 {
+		joined := strings.Join(opts.Config.LinkFlags, " ")
+		args = append(args,
+			fmt.Sprintf("-DCMAKE_EXE_LINKER_FLAGS=%s", joined),
+			fmt.Sprintf("-DCMAKE_SHARED_LINKER_FLAGS=%s", joined),
+			fmt.Sprintf("-DCMAKE_MODULE_LINKER_FLAGS=%s", joined),
+		)
+	}
+
+	return args
 }
 
 // installHeaderOnly copies include directories from source to install dir.
@@ -125,30 +150,34 @@ func copyDir(src, dst string) error {
 		}
 		target := filepath.Join(dst, rel)
 		if info.IsDir() {
-		return os.MkdirAll(target, info.Mode())
+			return os.MkdirAll(target, info.Mode())
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-		return err
-	}
+			return err
+		}
 		return os.WriteFile(target, data, info.Mode())
 	})
 }
+
 func runCmake(args []string, stdout, stderr io.Writer) error {
 	cmd := exec.Command("cmake", args...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	return cmd.Run()
 }
+
 // InstallDir returns the cache install path for a package.
 func InstallDir(cacheRoot, name, version, abiTag string) string {
 	return filepath.Join(cacheRoot, name, version, abiTag)
 }
+
 // IsCmakeInstalled checks if cmake is available on PATH.
 func IsCmakeInstalled() bool {
 	_, err := exec.LookPath("cmake")
 	return err == nil
 }
+
 // GuessJobs returns a reasonable parallelism level.
 func GuessJobs() int {
 	return runtime.NumCPU()

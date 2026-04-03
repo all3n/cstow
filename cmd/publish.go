@@ -40,13 +40,17 @@ var publishCmd = &cobra.Command{
 		if abiTag == "" {
 			abiTag = "default"
 		}
+		buildType, _ := cmd.Flags().GetString("build-type")
+		if err := validateBuildType(buildType); err != nil {
+			return err
+		}
 
 		buildDir := "build/release"
 		if _, err := os.Stat(buildDir); err != nil {
 			buildDir = "build/debug"
 		}
 
-		fmt.Printf(">> packaging %s@%s (abi: %s)\n", cfg.Package.Name, cfg.Package.Version, abiTag)
+		fmt.Printf(">> packaging %s@%s (abi: %s, type: %s)\n", cfg.Package.Name, cfg.Package.Version, abiTag, buildType)
 
 		data, err := pack.CreateTarZst(buildDir)
 		if err != nil {
@@ -58,7 +62,7 @@ var publishCmd = &cobra.Command{
 
 		fmt.Printf(">> uploading (%d bytes, sha256: %s...)\n", len(data), shaStr[:12])
 
-		if err := s3client.Upload(context.Background(), cfg.Package.Name, cfg.Package.Version, abiTag, data); err != nil {
+		if err := s3client.Upload(context.Background(), cfg.Package.Name, cfg.Package.Version, abiTag, buildType, data); err != nil {
 			return fmt.Errorf("upload artifact: %w", err)
 		}
 
@@ -68,9 +72,10 @@ var publishCmd = &cobra.Command{
 			Std:     cfg.Package.Std,
 			Artifacts: []registry.Artifact{
 				{
-					ABITag: abiTag,
-					SHA256: shaStr,
-					Size:   int64(len(data)),
+					ABITag:    abiTag,
+					BuildType: buildType,
+					SHA256:    shaStr,
+					Size:      int64(len(data)),
 				},
 			},
 		}
@@ -86,5 +91,6 @@ var publishCmd = &cobra.Command{
 
 func init() {
 	publishCmd.Flags().String("abi-tag", "", "ABI tag for this artifact")
+	publishCmd.Flags().String("build-type", "static", "artifact build type (static|shared|header-only)")
 	rootCmd.AddCommand(publishCmd)
 }

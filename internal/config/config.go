@@ -41,12 +41,13 @@ type Profile struct {
 }
 
 type Dependency struct {
-	Name    string `toml:"name"`
-	Version string `toml:"version"`
-	Source  string `toml:"source"`
-	Path    string `toml:"path"`
-	Git     string `toml:"git"`
-	Rev     string `toml:"rev"`
+	Name      string `toml:"name"`
+	Version   string `toml:"version"`
+	Source    string `toml:"source"`
+	BuildType string `toml:"build_type"`
+	Path      string `toml:"path"`
+	Git       string `toml:"git"`
+	Rev       string `toml:"rev"`
 }
 
 type Registry struct {
@@ -108,13 +109,13 @@ func (c *Config) Save(path string) error {
 
 // Global is the user-level configuration stored at ~/.cstow/config.toml.
 type Global struct {
-	Defaults     GlobalDefaults `toml:"defaults"`
-	Cache        GlobalCache    `toml:"cache"`
-	Repositories []RepoSource   `toml:"repositories"`
-	Registries   []Registry     `toml:"registry"`
+	Defaults     GlobalDefaults  `toml:"defaults"`
+	Cache        GlobalCache     `toml:"cache"`
+	Repositories []RepoSource    `toml:"repositories"`
+	Registries   []Registry      `toml:"registry"`
 	Toolchain    GlobalToolchain `toml:"toolchain"`
-	Build        GlobalBuild    `toml:"build"`
-	Network      GlobalNetwork  `toml:"network"`
+	Build        GlobalBuild     `toml:"build"`
+	Network      GlobalNetwork   `toml:"network"`
 }
 
 type GlobalDefaults struct {
@@ -141,9 +142,9 @@ type RepoSource struct {
 }
 
 type GlobalToolchain struct {
-	Prefer    string `toml:"prefer"`
-	MinGCC    string `toml:"min_gcc"`
-	MinClang  string `toml:"min_clang"`
+	Prefer   string `toml:"prefer"`
+	MinGCC   string `toml:"min_gcc"`
+	MinClang string `toml:"min_clang"`
 }
 
 type GlobalBuild struct {
@@ -157,10 +158,10 @@ type GlobalBuildFlags struct {
 }
 
 type GlobalNetwork struct {
-	Proxy     string   `toml:"proxy"`
-	NoProxy   []string `toml:"no_proxy"`
-	Timeout   int      `toml:"timeout_sec"`
-	Retries   int      `toml:"retries"`
+	Proxy   string   `toml:"proxy"`
+	NoProxy []string `toml:"no_proxy"`
+	Timeout int      `toml:"timeout_sec"`
+	Retries int      `toml:"retries"`
 }
 
 // LoadGlobal reads ~/.cstow/config.toml. Returns a zero-value Global with
