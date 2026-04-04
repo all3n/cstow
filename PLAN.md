@@ -40,7 +40,7 @@
 - `archive` 源码拉取还没有实现，当前基本只支持 git source
 - merged `CXXFlags` / `LinkFlags` 已进入当前 `install` 的 CMake configure 链路，但 `artifacts` / `install_targets` 还没有形成安装结果校验闭环
 - `build` 命令对项目 `build.defines`、`build.sources`、profile/hook 生命周期的利用还比较浅
-- `fetch` 已开始使用 manifest 做 artifact 选择，但下载后校验和验证仍未完成
+- `fetch` 已开始使用 manifest 做 artifact 选择，下载后 SHA256 校验已实现
 - workspace 目前是串行构建，没有成员依赖排序、共享 lock、并行调度
 
 ### 3. 当前不建议继续扩张的方向

@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -160,7 +162,8 @@ source = "registry"
 	archive, err := pack.CreateTarZst(sourceDir)
 	require.NoError(t, err)
 
-	fullHash := "def0123456789abc222222222222222222222222222222222222222222222222"
+	hashSum := sha256.Sum256(archive)
+	fullHash := hex.EncodeToString(hashSum[:])
 	fake := &fetchFakeRegistryClient{
 		getManifestFunc: func(_ context.Context, pkg, version string) (*registry.Manifest, error) {
 			if pkg != "googletest" || version != "1.14.0" {
@@ -193,7 +196,7 @@ source = "registry"
 	t.Cleanup(func() { fetchNewRegistryClient = prevFactory })
 
 	output := captureStdout(t, func() {
-		rootCmd.SetArgs([]string{"fetch", "--artifact", "def01234"})
+		rootCmd.SetArgs([]string{"fetch", "--artifact", fullHash[:8]})
 		require.NoError(t, rootCmd.Execute())
 	})
 	assert.Contains(t, output, "downloaded")
@@ -206,7 +209,7 @@ source = "registry"
 	store, err := artifactdb.OpenDefault()
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
-	rec, err := store.FindByHashID("def01234")
+	rec, err := store.FindByHashID(fullHash[:8])
 	require.NoError(t, err)
 	assert.Equal(t, fullHash, rec.HashID)
 	assert.Equal(t, expectedInstallDir, rec.InstallDir)
@@ -233,6 +236,15 @@ url = "s3://bucket/prefix"
 	require.NoError(t, os.Chdir(workdir))
 	t.Cleanup(func() { _ = os.Chdir(oldWD) })
 
+	sourceDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(sourceDir, "lib"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "lib", "libgtest.so"), []byte("remote"), 0o644))
+	archive, err := pack.CreateTarZst(sourceDir)
+	require.NoError(t, err)
+
+	hashSum := sha256.Sum256(archive)
+	archiveHash := hex.EncodeToString(hashSum[:])
+
 	missingDir := filepath.Join(workdir, "missing-prefix")
 	store, err := artifactdb.OpenDefault()
 	require.NoError(t, err)
@@ -242,18 +254,11 @@ url = "s3://bucket/prefix"
 		Version:    "1.14.0",
 		ABITag:     "abi-old",
 		BuildType:  "shared",
-		HashID:     "feed123456789abc333333333333333333333333333333333333333333333333",
+		HashID:     archiveHash,
 		InstallDir: missingDir,
 		Origin:     "registry",
 	}))
 
-	sourceDir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(sourceDir, "lib"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "lib", "libgtest.so"), []byte("remote"), 0o644))
-	archive, err := pack.CreateTarZst(sourceDir)
-	require.NoError(t, err)
-
-	fullHash := "feed123456789abc333333333333333333333333333333333333333333333333"
 	fake := &fetchFakeRegistryClient{
 		getManifestFunc: func(_ context.Context, pkg, version string) (*registry.Manifest, error) {
 			if pkg == "googletest" && version == "1.14.0" {
@@ -261,14 +266,14 @@ url = "s3://bucket/prefix"
 					Name:    pkg,
 					Version: version,
 					Artifacts: []registry.Artifact{
-						{ABITag: "abi-old", BuildType: "shared", HashID: fullHash},
+						{ABITag: "abi-old", BuildType: "shared", HashID: archiveHash},
 					},
 				}, nil
 			}
 			return nil, os.ErrNotExist
 		},
 		downloadFunc: func(_ context.Context, pkg, version, abiTag, buildType, hashID string) ([]byte, error) {
-			if pkg != "googletest" || version != "1.14.0" || abiTag != "abi-old" || buildType != "shared" || hashID != fullHash {
+			if pkg != "googletest" || version != "1.14.0" || abiTag != "abi-old" || buildType != "shared" || hashID != archiveHash {
 				return nil, os.ErrNotExist
 			}
 			return archive, nil
@@ -281,7 +286,7 @@ url = "s3://bucket/prefix"
 	}
 	t.Cleanup(func() { fetchNewRegistryClient = prevFactory })
 
-	rootCmd.SetArgs([]string{"fetch", "--artifact", "feed1234"})
+	rootCmd.SetArgs([]string{"fetch", "--artifact", archiveHash[:8]})
 	require.NoError(t, rootCmd.Execute())
 
 	assert.Contains(t, fake.getManifestCalls, "googletest@1.14.0")

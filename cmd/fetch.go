@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -153,6 +154,8 @@ var fetchCmd = &cobra.Command{
 						if downloadErr == nil {
 							fetchedABITag = artifact.ABITag
 							fetchedBuildType = artifact.BuildType
+							fetchedHashID = artifact.HashID
+							fetchedBuildTags = artifact.BuildTags
 						}
 					}
 				} else {
@@ -167,6 +170,9 @@ var fetchCmd = &cobra.Command{
 				}
 
 				if downloadErr == nil {
+					if err := verifyArtifactHash(data, fetchedHashID); err != nil {
+						return fmt.Errorf("integrity check failed for %s@%s: %w", pkg.Name, pkg.Version, err)
+					}
 					destDir := cache.Path(pkg.Name, pkg.Version, fetchedABITag, fetchedBuildType)
 					if err := os.MkdirAll(destDir, 0o755); err != nil {
 						return fmt.Errorf("create cache dir: %w", err)
@@ -432,6 +438,9 @@ func fetchByHashID(cmd *cobra.Command, hashID string) error {
 	if err != nil {
 		return fmt.Errorf("download artifact %s@%s (%s, %s, %s): %w", match.name, match.version, match.artifact.ABITag, match.artifact.BuildType, match.artifact.HashID, err)
 	}
+	if err := verifyArtifactHash(data, match.artifact.HashID); err != nil {
+		return fmt.Errorf("integrity check failed for %s@%s: %w", match.name, match.version, err)
+	}
 
 	destDir := cache.Path(match.name, match.version, match.artifact.ABITag, match.artifact.BuildType)
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
@@ -556,4 +565,16 @@ func resetFetchFlagState(cmd *cobra.Command) {
 	resetFetchFlag("artifact")
 	resetFetchFlag("toolchain")
 	resetFetchFlag("source-fallback")
+}
+
+func verifyArtifactHash(data []byte, expectedHex string) error {
+	if expectedHex == "" {
+		return nil
+	}
+	sum := sha256.Sum256(data)
+	actual := fmt.Sprintf("%x", sum)
+	if !strings.EqualFold(actual, expectedHex) {
+		return fmt.Errorf("SHA256 mismatch: expected %s, got %s", expectedHex, actual)
+	}
+	return nil
 }

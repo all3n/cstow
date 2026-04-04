@@ -1,1 +1,2 @@
 - [Codebase Review 2026-03-31](codebase-review-2026-03-31.md) — Full codebase audit: compiles clean, tests pass, but has path traversal bug in pack.go and file descriptor leak in CreateTarZst
+- [Publish/Registry Review 2026-04-04](publish-registry-review-2026-04-04.md) — Fetch drops hash_id when indexing, project-mode publish skips artifactdb, isManifestNotFoundError too broad

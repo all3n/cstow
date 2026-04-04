@@ -620,3 +620,132 @@ func init() {
 	_ = func() fetchRegistryClient { return &sharedFakeRegistry{} }
 	_ = func() publishRegistryClient { return &sharedFakeRegistry{} }
 }
+
+// TestFetchStoresHashIDFromManifest verifies that a fresh fetch (no prior publish to
+// artifactdb) correctly stores hash_id and build_tags from the manifest into the local
+// artifact database. This catches a regression where the fetch code forgot to propagate
+// artifact.HashID and artifact.BuildTags after manifest-based download.
+func TestFetchStoresHashIDFromManifest(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".cstow"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".cstow", "config.toml"), []byte(`
+[[registry]]
+name = "default"
+url = "s3://bucket/prefix"
+`), 0o644))
+
+	installPrefix := filepath.Join(home, "install", "mylib")
+	require.NoError(t, os.MkdirAll(filepath.Join(installPrefix, "lib"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(installPrefix, "include"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(installPrefix, "include", "mylib.h"), []byte("#pragma once"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(installPrefix, "lib", "libmylib.a"), []byte("mylib-static"), 0o644))
+
+	sharedReg := newSharedFakeRegistry()
+
+	// Publish to populate the fake registry with a manifest containing hash_id.
+	// Seed artifactdb so publish can find the install dir.
+	store, err := artifactdb.OpenDefault()
+	require.NoError(t, err)
+	require.NoError(t, store.Upsert(artifactdb.Record{
+		Name:       "mylib",
+		Version:    "2.0.0",
+		ABITag:     "gcc13-cxx17",
+		BuildType:  "static",
+		InstallDir: installPrefix,
+		Origin:     "local",
+	}))
+	require.NoError(t, store.Close())
+
+	prevPubFactory := publishNewRegistryClient
+	publishNewRegistryClient = func(_ context.Context, _ config.Registry) (publishRegistryClient, error) {
+		return sharedReg, nil
+	}
+	prevFetchFactory := fetchNewRegistryClient
+	fetchNewRegistryClient = func(_ context.Context, _ config.Registry) (fetchRegistryClient, error) {
+		return sharedReg, nil
+	}
+	t.Cleanup(func() {
+		publishNewRegistryClient = prevPubFactory
+		fetchNewRegistryClient = prevFetchFactory
+	})
+
+	oldWD, err := os.Getwd()
+	require.NoError(t, err)
+	workdir := t.TempDir()
+	require.NoError(t, os.Chdir(workdir))
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+
+	// Publish to seed the registry
+	_ = captureStdout(t, func() {
+		rootCmd.SetArgs([]string{
+			"publish", "mylib",
+			"--version", "2.0.0",
+			"--abi-tag", "gcc13-cxx17",
+			"--build-type", "static",
+			"--build-tag", "os=linux",
+		})
+		require.NoError(t, rootCmd.Execute())
+	})
+
+	// Get the hash from the registry manifest
+	manifest, err := sharedReg.GetManifest(context.Background(), "mylib", "2.0.0")
+	require.NoError(t, err)
+	require.Len(t, manifest.Artifacts, 1)
+	expectedHash := manifest.Artifacts[0].HashID
+	require.NotEmpty(t, expectedHash)
+
+	// Delete the artifactdb so fetch starts completely fresh
+	require.NoError(t, os.Remove(filepath.Join(home, ".cstow", "cstow.db")))
+	// Remove cache so fetch has to download
+	require.NoError(t, os.RemoveAll(filepath.Join(home, ".cstow", "cache")))
+
+	// Write config for fetch
+	require.NoError(t, os.WriteFile("cstow.toml", []byte(`
+[package]
+name = "test-project"
+version = "0.1.0"
+
+[[dependencies]]
+name = "mylib"
+version = "2.0.0"
+source = "registry"
+build_type = "static"
+`), 0o644))
+	require.NoError(t, os.WriteFile("cstow.lock", []byte(`
+version = 1
+
+[[package]]
+name = "mylib"
+version = "2.0.0"
+source = "registry"
+abi_tag = "gcc13-cxx17"
+build_type = "static"
+`), 0o644))
+
+	// Fetch
+	_ = captureStdout(t, func() {
+		rootCmd.SetArgs([]string{"fetch", "--toolchain", "gcc"})
+		require.NoError(t, rootCmd.Execute())
+	})
+
+	// Verify artifactdb has the hash_id and build_tags
+	freshStore, err := artifactdb.OpenDefault()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, freshStore.Close()) })
+
+	rows, err := freshStore.List()
+	require.NoError(t, err)
+
+	var mylibRow *artifactdb.Record
+	for i := range rows {
+		if rows[i].Name == "mylib" && rows[i].BuildType == "static" {
+			mylibRow = &rows[i]
+			break
+		}
+	}
+	require.NotNil(t, mylibRow, "mylib static should be in artifactdb after fetch")
+	assert.Equal(t, expectedHash, mylibRow.HashID, "hash_id should be populated from manifest")
+	assert.Equal(t, []string{"os=linux"}, mylibRow.BuildTags, "build_tags should be populated from manifest")
+	assert.Equal(t, "registry", mylibRow.Origin)
+}
