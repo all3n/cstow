@@ -329,7 +329,7 @@ url = "s3://bucket/prefix"
 	err = rootCmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "get manifest")
-	assert.Equal(t, 1, fake.uploadCalls)
+	assert.Equal(t, 0, fake.uploadCalls, "upload should be skipped if GetManifest fails")
 	assert.Equal(t, 0, fake.manifestUploadCalls)
 }
 
@@ -462,6 +462,157 @@ url = "s3://bucket/prefix"
 		}
 	}
 	assert.Equal(t, 1, sharedCount)
+}
+
+func TestPublishSkipsIfHashMatches(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".cstow"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".cstow", "config.toml"), []byte(`
+[[registry]]
+name = "default"
+url = "s3://bucket/prefix"
+`), 0o644))
+
+	installPrefix := filepath.Join(home, "install", "googletest")
+	require.NoError(t, os.MkdirAll(filepath.Join(installPrefix, "lib"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(installPrefix, "lib", "libgtest.so"), []byte("binary"), 0o644))
+
+	// First publish to get the hash
+	fake := &publishFakeRegistryClient{}
+	prevFactory := publishNewRegistryClient
+	publishNewRegistryClient = func(_ context.Context, _ config.Registry) (publishRegistryClient, error) {
+		return fake, nil
+	}
+	t.Cleanup(func() { publishNewRegistryClient = prevFactory })
+
+	store, err := artifactdb.OpenDefault()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	require.NoError(t, store.Upsert(artifactdb.Record{
+		Name:       "googletest",
+		Version:    "1.14.0",
+		ABITag:     "abi-1",
+		BuildType:  "shared",
+		InstallDir: installPrefix,
+		Origin:     "local",
+	}))
+
+	oldWD, err := os.Getwd()
+	require.NoError(t, err)
+	workdir := t.TempDir()
+	require.NoError(t, os.Chdir(workdir))
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+
+	rootCmd.SetArgs([]string{
+		"publish", "googletest",
+		"--version", "1.14.0",
+		"--abi-tag", "abi-1",
+		"--build-type", "shared",
+	})
+	require.NoError(t, rootCmd.Execute())
+	assert.Equal(t, 1, fake.uploadCalls)
+	hashID := fake.uploadedID
+
+	// Second publish should skip
+	fake.uploadCalls = 0
+	fake.manifestUploadCalls = 0
+	stdout := captureStdout(t, func() {
+		rootCmd.SetArgs([]string{
+			"publish", "googletest",
+			"--version", "1.14.0",
+			"--abi-tag", "abi-1",
+			"--build-type", "shared",
+		})
+		require.NoError(t, rootCmd.Execute())
+	})
+	assert.Equal(t, 0, fake.uploadCalls, "should skip upload")
+	assert.Equal(t, 0, fake.manifestUploadCalls, "should skip manifest upload")
+	assert.Contains(t, stdout, "already published with same content")
+
+	// Third publish with --force should NOT skip
+	fake.uploadCalls = 0
+	fake.manifestUploadCalls = 0
+	rootCmd.SetArgs([]string{
+		"publish", "googletest",
+		"--version", "1.14.0",
+		"--abi-tag", "abi-1",
+		"--build-type", "shared",
+		"--force",
+	})
+	require.NoError(t, rootCmd.Execute())
+	assert.Equal(t, 1, fake.uploadCalls, "should NOT skip upload with --force")
+	assert.Equal(t, 1, fake.manifestUploadCalls)
+	assert.Equal(t, hashID, fake.uploadedID)
+}
+
+func TestPublishUpdatesExistingArtifact(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".cstow"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".cstow", "config.toml"), []byte(`
+[[registry]]
+name = "default"
+url = "s3://bucket/prefix"
+`), 0o644))
+
+	installPrefix := filepath.Join(home, "install", "googletest")
+	require.NoError(t, os.MkdirAll(filepath.Join(installPrefix, "lib"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(installPrefix, "lib", "libgtest.so"), []byte("v1"), 0o644))
+
+	fake := &publishFakeRegistryClient{}
+	prevFactory := publishNewRegistryClient
+	publishNewRegistryClient = func(_ context.Context, _ config.Registry) (publishRegistryClient, error) {
+		return fake, nil
+	}
+	t.Cleanup(func() { publishNewRegistryClient = prevFactory })
+
+	store, err := artifactdb.OpenDefault()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	require.NoError(t, store.Upsert(artifactdb.Record{
+		Name:       "googletest",
+		Version:    "1.14.0",
+		ABITag:     "abi-1",
+		BuildType:  "shared",
+		InstallDir: installPrefix,
+		Origin:     "local",
+	}))
+
+	oldWD, err := os.Getwd()
+	require.NoError(t, err)
+	workdir := t.TempDir()
+	require.NoError(t, os.Chdir(workdir))
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+
+	// First publish
+	rootCmd.SetArgs([]string{
+		"publish", "googletest",
+		"--version", "1.14.0",
+		"--abi-tag", "abi-1",
+		"--build-type", "shared",
+	})
+	require.NoError(t, rootCmd.Execute())
+	hash1 := fake.uploadedID
+
+	// Change content and publish again
+	require.NoError(t, os.WriteFile(filepath.Join(installPrefix, "lib", "libgtest.so"), []byte("v2"), 0o644))
+	fake.uploadCalls = 0
+	fake.manifestUploadCalls = 0
+	stdout := captureStdout(t, func() {
+		rootCmd.SetArgs([]string{
+			"publish", "googletest",
+			"--version", "1.14.0",
+			"--abi-tag", "abi-1",
+			"--build-type", "shared",
+		})
+		require.NoError(t, rootCmd.Execute())
+	})
+	hash2 := fake.uploadedID
+	assert.NotEqual(t, hash1, hash2)
+	assert.Equal(t, 1, fake.uploadCalls, "should upload when hash differs")
+	assert.Equal(t, 1, fake.manifestUploadCalls)
+	assert.Contains(t, stdout, "updating existing artifact")
 }
 
 func TestPublishLocalArtifactMarksIndexedOriginRegistry(t *testing.T) {

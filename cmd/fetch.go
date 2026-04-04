@@ -546,7 +546,8 @@ func isArtifactNotFoundError(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "not found")
+	return strings.Contains(msg, "no artifact matches") ||
+		(strings.Contains(msg, "artifact with hash_id prefix") && strings.Contains(msg, "not found"))
 }
 
 func resetFetchFlagState(cmd *cobra.Command) {

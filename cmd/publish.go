@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/all3n/cstow/internal/artifactdb"
@@ -61,6 +62,7 @@ var publishCmd = &cobra.Command{
 		abiTag, _ := cmd.Flags().GetString("abi-tag")
 		buildType, _ := cmd.Flags().GetString("build-type")
 		version, _ := cmd.Flags().GetString("version")
+		force, _ := cmd.Flags().GetBool("force")
 		buildTagsRaw, _ := cmd.Flags().GetStringArray("build-tag")
 		buildTags, err := parseBuildTags(buildTagsRaw)
 		if err != nil {
@@ -94,6 +96,9 @@ var publishCmd = &cobra.Command{
 			if _, err := os.Stat(publishDir); err != nil {
 				publishDir = "build/debug"
 			}
+			if absDir, err := filepath.Abs(publishDir); err == nil {
+				publishDir = absDir
+			}
 		case 1:
 			name = args[0]
 			if version == "" {
@@ -124,24 +129,41 @@ var publishCmd = &cobra.Command{
 		hash := sha256.Sum256(data)
 		hashID := fmt.Sprintf("%x", hash)
 
+		// Check manifest before uploading to avoid redundant work
+		manifest, err := s3client.GetManifest(context.Background(), name, version)
+		if err != nil && !isManifestNotFoundError(err) {
+			return fmt.Errorf("get manifest: %w", err)
+		}
+		if manifest == nil {
+			manifest = &registry.Manifest{
+				Name:    name,
+				Version: version,
+			}
+		}
+
+		var existing *registry.Artifact
+		for i := range manifest.Artifacts {
+			if manifest.Artifacts[i].ABITag == abiTag && manifest.Artifacts[i].BuildType == buildType {
+				existing = &manifest.Artifacts[i]
+				break
+			}
+		}
+
+		if existing != nil && existing.HashID == hashID && !force {
+			fmt.Printf(">> artifact already published with same content (hash: %s...), skipping\n", hashID[:12])
+			goto indexLocal
+		}
+
+		if existing != nil {
+			fmt.Printf(">> updating existing artifact (hash: %s... -> %s...)\n", existing.HashID[:12], hashID[:12])
+		}
+
 		fmt.Printf(">> uploading (%d bytes, sha256: %s...)\n", len(data), hashID[:12])
 
 		if err := s3client.Upload(context.Background(), name, version, abiTag, buildType, hashID, data); err != nil {
 			return fmt.Errorf("upload artifact: %w", err)
 		}
 
-		manifest, err := s3client.GetManifest(context.Background(), name, version)
-		if err != nil {
-			if !isManifestNotFoundError(err) {
-				return fmt.Errorf("get manifest: %w", err)
-			}
-			manifest = &registry.Manifest{}
-		}
-		if manifest == nil {
-			manifest = &registry.Manifest{}
-		}
-		manifest.Name = name
-		manifest.Version = version
 		if pkgStd != "" {
 			manifest.Std = pkgStd
 		}
@@ -159,6 +181,7 @@ var publishCmd = &cobra.Command{
 			return fmt.Errorf("upload manifest: %w", err)
 		}
 
+	indexLocal:
 		cache := resolver.NewFSCache()
 		if err := indexSuccessfulArtifact(cache, indexedArtifact{
 			Name:       name,
@@ -273,8 +296,7 @@ func isManifestNotFoundError(err error) bool {
 	}
 	lower := strings.ToLower(err.Error())
 	return strings.Contains(lower, "nosuchkey") ||
-		strings.Contains(lower, "manifest not found") ||
-		strings.Contains(lower, "not found")
+		strings.Contains(lower, "manifest not found")
 }
 
 func resetPublishFlagState(cmd *cobra.Command) {
@@ -294,6 +316,7 @@ func resetPublishFlagState(cmd *cobra.Command) {
 	resetPublishFlag("build-type")
 	resetPublishFlag("version")
 	resetPublishFlag("build-tag")
+	resetPublishFlag("force")
 }
 
 func init() {
@@ -301,5 +324,6 @@ func init() {
 	publishCmd.Flags().String("build-type", "", "artifact build type (static|shared|header-only)")
 	publishCmd.Flags().String("version", "", "version to publish (required with local-artifact mode)")
 	publishCmd.Flags().StringArray("build-tag", nil, "build tag metadata for this artifact (repeatable key=value)")
+	publishCmd.Flags().Bool("force", false, "force upload even if artifact with same hash already exists")
 	rootCmd.AddCommand(publishCmd)
 }
