@@ -67,7 +67,6 @@ func (s *Store) Close() error {
 
 func (s *Store) initSchema() error {
 	const schema = `
-PRAGMA user_version = 2;
 CREATE TABLE IF NOT EXISTS artifacts (
     name TEXT NOT NULL,
     version TEXT NOT NULL,
@@ -84,7 +83,6 @@ CREATE TABLE IF NOT EXISTS artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_name ON artifacts (name);
 CREATE INDEX IF NOT EXISTS idx_artifacts_updated_at ON artifacts (updated_at DESC);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_hash_id_non_empty ON artifacts (hash_id) WHERE hash_id <> '';
 `
 	_, err := s.db.Exec(schema)
 	if err != nil {
@@ -98,6 +96,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_hash_id_non_empty ON artifacts (
 	}
 	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_hash_id_non_empty ON artifacts (hash_id) WHERE hash_id <> ''`); err != nil {
 		return fmt.Errorf("create hash_id index: %w", err)
+	}
+	if _, err := s.db.Exec(`PRAGMA user_version = 2`); err != nil {
+		return fmt.Errorf("set user_version: %w", err)
 	}
 	return nil
 }
@@ -173,8 +174,14 @@ WHERE name = ? AND version = ? AND abi_tag = ? AND build_type = ?`,
 INSERT INTO artifacts (name, version, abi_tag, build_type, hash_id, build_tags, install_dir, origin, created_at, updated_at, last_seen_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(name, version, abi_tag, build_type) DO UPDATE SET
-    hash_id = excluded.hash_id,
-    build_tags = excluded.build_tags,
+    hash_id = CASE
+        WHEN excluded.hash_id = '' THEN artifacts.hash_id
+        ELSE excluded.hash_id
+    END,
+    build_tags = CASE
+        WHEN excluded.build_tags = '[]' THEN artifacts.build_tags
+        ELSE excluded.build_tags
+    END,
     install_dir = excluded.install_dir,
     origin = CASE
         WHEN excluded.origin = 'unknown' AND artifacts.origin <> 'unknown' THEN artifacts.origin

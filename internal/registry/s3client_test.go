@@ -20,6 +20,13 @@ func TestArtifactObjectKeyIncludesBuildType(t *testing.T) {
 	)
 }
 
+func TestArtifactObjectKeyWithoutHashIDKeepsTypedLayout(t *testing.T) {
+	assert.Equal(t,
+		"prefix/fmt/10.2.1/gcc13-cxx17-linux-x86_64/shared.tar.zst",
+		artifactObjectKey("prefix", "fmt", "10.2.1", "gcc13-cxx17-linux-x86_64", "shared", ""),
+	)
+}
+
 func TestLegacyArtifactObjectKey(t *testing.T) {
 	assert.Equal(t,
 		"prefix/fmt/10.2.1/gcc13-cxx17-linux-x86_64.tar.zst",

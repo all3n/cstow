@@ -305,10 +305,13 @@ func defaultRegionForEndpoint(provider, endpoint string) string {
 
 // Upload uploads a package artifact to the registry
 func artifactObjectKey(prefix, pkg, version, abiTag, buildType, hashID string) string {
-	if hashID == "" {
-		return legacyArtifactObjectKey(prefix, pkg, version, abiTag)
+	if hashID != "" {
+		return path.Join(prefix, pkg, version, abiTag, buildType, hashID+".tar.zst")
 	}
-	return path.Join(prefix, pkg, version, abiTag, buildType, hashID+".tar.zst")
+	if buildType != "" {
+		return path.Join(prefix, pkg, version, abiTag, buildType+".tar.zst")
+	}
+	return legacyArtifactObjectKey(prefix, pkg, version, abiTag)
 }
 
 func legacyArtifactObjectKey(prefix, pkg, version, abiTag string) string {
