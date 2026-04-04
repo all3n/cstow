@@ -77,3 +77,35 @@ func TestCreateTarZstManyFiles(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, len(data) > 0)
 }
+
+func TestCreateAndExtractTarZstWithSymlink(t *testing.T) {
+	srcDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "lib"), 0o755))
+
+	realName := filepath.Join(srcDir, "lib", "libexample.so.1.2.3")
+	linkName := filepath.Join(srcDir, "lib", "libexample.so")
+	require.NoError(t, os.WriteFile(realName, []byte("shared object content"), 0o644))
+
+	if err := os.Symlink("libexample.so.1.2.3", linkName); err != nil {
+		t.Skipf("symlink not supported in this environment: %v", err)
+	}
+
+	data, err := CreateTarZst(srcDir)
+	require.NoError(t, err)
+
+	dstDir := t.TempDir()
+	require.NoError(t, ExtractTarZst(data, dstDir))
+
+	content, err := os.ReadFile(filepath.Join(dstDir, "lib", "libexample.so.1.2.3"))
+	require.NoError(t, err)
+	assert.Equal(t, "shared object content", string(content))
+
+	linkPath := filepath.Join(dstDir, "lib", "libexample.so")
+	linkInfo, err := os.Lstat(linkPath)
+	require.NoError(t, err)
+	assert.True(t, linkInfo.Mode()&os.ModeSymlink != 0, "expected extracted path to remain a symlink")
+
+	target, err := os.Readlink(linkPath)
+	require.NoError(t, err)
+	assert.Equal(t, "libexample.so.1.2.3", target)
+}

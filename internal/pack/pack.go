@@ -35,12 +35,29 @@ func CreateTarZst(dir string) ([]byte, error) {
 		if err != nil {
 			return err
 		}
+		rel = filepath.ToSlash(rel)
 
-		hdr := &tar.Header{
-			Name: rel,
-			Mode: int64(info.Mode()),
-			Size: info.Size(),
+		if info.Mode()&os.ModeSymlink != 0 {
+			linkTarget, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			hdr, err := tar.FileInfoHeader(info, linkTarget)
+			if err != nil {
+				return err
+			}
+			hdr.Name = rel
+			if err := tw.WriteHeader(hdr); err != nil {
+				return err
+			}
+			return nil
 		}
+
+		hdr, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		hdr.Name = rel
 		if err := tw.WriteHeader(hdr); err != nil {
 			return err
 		}
@@ -79,6 +96,8 @@ func ExtractTarZst(data []byte, dir string) error {
 	defer dec.Close()
 
 	tr := tar.NewReader(dec)
+	cleanDir := filepath.Clean(dir)
+	cleanDirWithSep := cleanDir + string(os.PathSeparator)
 
 	for {
 		hdr, err := tr.Next()
@@ -91,25 +110,51 @@ func ExtractTarZst(data []byte, dir string) error {
 
 		target := filepath.Join(dir, hdr.Name)
 		cleanTarget := filepath.Clean(target)
-		cleanDir := filepath.Clean(dir) + string(os.PathSeparator)
-		if !strings.HasPrefix(cleanTarget, cleanDir) {
+		if cleanTarget != cleanDir && !strings.HasPrefix(cleanTarget, cleanDirWithSep) {
 			return fmt.Errorf("path traversal detected: %s", hdr.Name)
 		}
 
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		parent := filepath.Dir(target)
+		if err := os.MkdirAll(parent, 0o755); err != nil {
 			return err
 		}
 
-		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY, os.FileMode(hdr.Mode))
+		resolvedParent, err := filepath.EvalSymlinks(parent)
 		if err != nil {
 			return err
 		}
-
-		if _, err := io.Copy(f, tr); err != nil {
-			f.Close()
-			return err
+		resolvedParent = filepath.Clean(resolvedParent)
+		if resolvedParent != cleanDir && !strings.HasPrefix(resolvedParent, cleanDirWithSep) {
+			return fmt.Errorf("path traversal detected via symlink: %s", hdr.Name)
 		}
-		f.Close()
+
+		switch hdr.Typeflag {
+		case tar.TypeSymlink:
+			if err := os.Symlink(hdr.Linkname, target); err != nil {
+				return err
+			}
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, os.FileMode(hdr.Mode)); err != nil {
+				return err
+			}
+		case tar.TypeReg, tar.TypeRegA:
+			if existing, err := os.Lstat(target); err == nil && existing.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("refusing to write through symlink: %s", hdr.Name)
+			}
+
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
+			if err != nil {
+				return err
+			}
+
+			if _, err := io.Copy(f, tr); err != nil {
+				f.Close()
+				return err
+			}
+			f.Close()
+		default:
+			return fmt.Errorf("unsupported tar entry type: %v", hdr.Typeflag)
+		}
 	}
 
 	return nil

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
@@ -69,6 +70,44 @@ func SelectArtifact(manifest *Manifest, abiTags []string, buildType string) (*Ar
 	}
 
 	return nil, fmt.Errorf("no artifact matches abi=%v build_type=%q", abiTags, buildType)
+}
+
+// FindArtifactByHashID resolves a manifest artifact by exact hash_id or unique hash_id prefix.
+func FindArtifactByHashID(manifest *Manifest, hashID string) (*Artifact, error) {
+	if manifest == nil {
+		return nil, fmt.Errorf("manifest is required")
+	}
+	hashID = strings.TrimSpace(hashID)
+	if hashID == "" {
+		return nil, fmt.Errorf("hash_id must not be empty")
+	}
+
+	for i := range manifest.Artifacts {
+		artifact := &manifest.Artifacts[i]
+		if artifact.HashID == hashID {
+			return artifact, nil
+		}
+	}
+
+	var (
+		match      *Artifact
+		candidates []string
+	)
+	for i := range manifest.Artifacts {
+		artifact := &manifest.Artifacts[i]
+		if artifact.HashID == "" || !strings.HasPrefix(artifact.HashID, hashID) {
+			continue
+		}
+		candidates = append(candidates, artifact.HashID)
+		if match != nil {
+			return nil, fmt.Errorf("hash_id prefix %q is ambiguous in manifest %s@%s: %s", hashID, manifest.Name, manifest.Version, strings.Join(candidates, ", "))
+		}
+		match = artifact
+	}
+	if match == nil {
+		return nil, fmt.Errorf("artifact with hash_id prefix %q not found in manifest %s@%s", hashID, manifest.Name, manifest.Version)
+	}
+	return match, nil
 }
 
 // S3Client wraps S3 operations for package registry
@@ -318,17 +357,106 @@ func legacyArtifactObjectKey(prefix, pkg, version, abiTag string) string {
 	return path.Join(prefix, pkg, version, abiTag+".tar.zst")
 }
 
-func (c *S3Client) Upload(ctx context.Context, pkg, version, abiTag, buildType string, data []byte) error {
-	key := artifactObjectKey(c.prefix, pkg, version, abiTag, buildType, "")
-	_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(c.bucket),
-		Key:    aws.String(key),
-		Body:   bytes.NewReader(data),
-	})
-	if err != nil {
-		return fmt.Errorf("upload %s: %w", key, err)
+func (c *S3Client) Upload(ctx context.Context, pkg, version, abiTag, buildType, hashID string, data []byte) error {
+	keys := artifactUploadKeys(c.prefix, pkg, version, abiTag, buildType, hashID)
+	for _, key := range keys {
+		_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket: aws.String(c.bucket),
+			Key:    aws.String(key),
+			Body:   bytes.NewReader(data),
+		})
+		if err != nil {
+			return fmt.Errorf("upload %s: %w", key, err)
+		}
 	}
 	return nil
+}
+
+func artifactUploadKeys(prefix, pkg, version, abiTag, buildType, hashID string) []string {
+	keys := []string{artifactObjectKey(prefix, pkg, version, abiTag, buildType, hashID)}
+	if hashID == "" {
+		return keys
+	}
+	if buildType != "" {
+		keys = append(keys, artifactObjectKey(prefix, pkg, version, abiTag, buildType, ""))
+		return dedupeKeys(keys)
+	}
+	keys = append(keys, legacyArtifactObjectKey(prefix, pkg, version, abiTag))
+	return dedupeKeys(keys)
+}
+
+func dedupeKeys(keys []string) []string {
+	seen := make(map[string]struct{}, len(keys))
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+	return out
+}
+
+func artifactDownloadKeys(prefix, pkg, version, abiTag, buildType, hashID string) []string {
+	keys := make([]string, 0, 3)
+	if hashID != "" {
+		keys = append(keys, artifactObjectKey(prefix, pkg, version, abiTag, buildType, hashID))
+	}
+	if buildType != "" {
+		keys = append(keys, artifactObjectKey(prefix, pkg, version, abiTag, buildType, ""))
+	}
+	keys = append(keys, legacyArtifactObjectKey(prefix, pkg, version, abiTag))
+	return dedupeKeys(keys)
+}
+
+func hashMatches(data []byte, hashID string) bool {
+	if hashID == "" {
+		return true
+	}
+	sum := sha256.Sum256(data)
+	actual := fmt.Sprintf("%x", sum)
+	return strings.EqualFold(actual, hashID)
+}
+
+func downloadFirstMatching(keys []string, hashID string, getter func(key string) ([]byte, error)) ([]byte, error) {
+	var lastErr error
+	for _, key := range keys {
+		data, err := getter(key)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if !hashMatches(data, hashID) {
+			lastErr = fmt.Errorf("hash mismatch for key %s", key)
+			continue
+		}
+		return data, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("artifact not found")
+	}
+	return nil, lastErr
+}
+
+// Download downloads a package artifact from the registry
+func (c *S3Client) Download(ctx context.Context, pkg, version, abiTag, buildType, hashID string) ([]byte, error) {
+	keys := artifactDownloadKeys(c.prefix, pkg, version, abiTag, buildType, hashID)
+	data, err := downloadFirstMatching(keys, hashID, func(key string) ([]byte, error) {
+		resp, err := c.client.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(c.bucket),
+			Key:    aws.String(key),
+		})
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		return io.ReadAll(resp.Body)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("download %s@%s (%s, %s, %s): %w", pkg, version, abiTag, buildType, hashID, err)
+	}
+	return data, nil
 }
 
 // UploadManifest uploads the manifest.toml for a package version
@@ -350,31 +478,6 @@ func (c *S3Client) UploadManifest(ctx context.Context, pkg, version string, mani
 		return fmt.Errorf("upload manifest %s: %w", key, err)
 	}
 	return nil
-}
-
-// Download downloads a package artifact from the registry
-func (c *S3Client) Download(ctx context.Context, pkg, version, abiTag, buildType string) ([]byte, error) {
-	keys := []string{legacyArtifactObjectKey(c.prefix, pkg, version, abiTag)}
-	if buildType != "" {
-		keys = append([]string{artifactObjectKey(c.prefix, pkg, version, abiTag, buildType, "")}, keys...)
-	}
-	var lastErr error
-	for _, key := range keys {
-		resp, err := c.client.GetObject(ctx, &s3.GetObjectInput{
-			Bucket: aws.String(c.bucket),
-			Key:    aws.String(key),
-		})
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		defer resp.Body.Close()
-		return io.ReadAll(resp.Body)
-	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("artifact not found")
-	}
-	return nil, fmt.Errorf("download %s@%s (%s, %s): %w", pkg, version, abiTag, buildType, lastErr)
 }
 
 // GetManifest downloads and parses the manifest for a package version

@@ -206,6 +206,11 @@ ON CONFLICT(name, version, abi_tag, build_type) DO UPDATE SET
 }
 
 func (s *Store) FindByHashID(prefix string) (Record, error) {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return Record{}, fmt.Errorf("hash_id must not be empty")
+	}
+
 	var rec Record
 	var createdAt, updatedAt, lastSeenAt, buildTagsRaw string
 	err := s.db.QueryRow(`
@@ -260,7 +265,7 @@ ORDER BY hash_id`,
 		return Record{}, fmt.Errorf("iterate hash_id matches: %w", err)
 	}
 	if len(matches) == 0 {
-		return Record{}, fmt.Errorf("find by hash_id %q: %w", prefix, sql.ErrNoRows)
+		return Record{}, fmt.Errorf("artifact with hash_id prefix %q not found", prefix)
 	}
 	if len(matches) > 1 {
 		candidates := make([]string, 0, len(matches))

@@ -12,6 +12,8 @@ type indexedArtifact struct {
 	Version    string
 	ABITag     string
 	BuildType  string
+	HashID     string
+	BuildTags  []string
 	InstallDir string
 	Origin     string
 }
@@ -33,6 +35,8 @@ func indexSuccessfulArtifact(cache resolver.LocalCache, item indexedArtifact) er
 		Version:    item.Version,
 		ABITag:     item.ABITag,
 		BuildType:  buildType,
+		HashID:     item.HashID,
+		BuildTags:  item.BuildTags,
 		InstallDir: item.InstallDir,
 		Origin:     item.Origin,
 	})

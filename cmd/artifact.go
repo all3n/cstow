@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/all3n/cstow/internal/artifactdb"
@@ -72,8 +73,37 @@ var artifactSyncCmd = &cobra.Command{
 	},
 }
 
+var artifactShowCmd = &cobra.Command{
+	Use:   "show <hashid>",
+	Short: "Show an indexed artifact by hash_id or unique hash prefix",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		store, err := artifactdb.OpenDefault()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+
+		rec, err := store.FindByHashID(args[0])
+		if err != nil {
+			return err
+		}
+
+		fmt.Fprintf(cmd.OutOrStdout(), "name: %s\n", rec.Name)
+		fmt.Fprintf(cmd.OutOrStdout(), "version: %s\n", rec.Version)
+		fmt.Fprintf(cmd.OutOrStdout(), "abi: %s\n", rec.ABITag)
+		fmt.Fprintf(cmd.OutOrStdout(), "build_type: %s\n", displayBuildType(rec.BuildType))
+		fmt.Fprintf(cmd.OutOrStdout(), "hash_id: %s\n", rec.HashID)
+		fmt.Fprintf(cmd.OutOrStdout(), "build_tags: %s\n", strings.Join(rec.BuildTags, ","))
+		fmt.Fprintf(cmd.OutOrStdout(), "origin: %s\n", rec.Origin)
+		fmt.Fprintf(cmd.OutOrStdout(), "path: %s\n", rec.InstallDir)
+		return nil
+	},
+}
+
 func init() {
 	artifactCmd.AddCommand(artifactListCmd)
 	artifactCmd.AddCommand(artifactSyncCmd)
+	artifactCmd.AddCommand(artifactShowCmd)
 	rootCmd.AddCommand(artifactCmd)
 }

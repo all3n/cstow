@@ -21,6 +21,7 @@ When changing behavior, follow the code as it exists today instead of the origin
 - `cmd/install.go` is the only command that currently uses `internal/repository/` and `internal/builder/` to build third-party packages from source.
 - `cmd/add.go` updates `cstow.toml` and `cstow.lock` through `internal/resolver`; it can record dependency `build_type`, but it still does **not** validate dependencies against repository definitions yet.
 - `cmd/fetch.go` downloads prebuilt artifacts into the local cache, uses manifest metadata when available to match ABI/build_type, can fall back to repository source builds, and symlinks results into `./cstow_deps`.
+- `cmd/publish.go` supports both project-directory publish and direct local-artifact publish by `(name, version, abi_tag, build_type)`; successful publish/fetch paths can populate artifact `hash_id` metadata (and `build_tags`) in local SQLite index and registry manifests.
 - `internal/repository/source.go` supports `git` sources; `archive` sources are still a stub.
 - `internal/builder/` currently supports CMake installs for `static` / `shared` libraries and `header-only` packages. It does not yet implement `make`, `autoconf`, `meson`, or generic custom builders.
 - `cmd/install` has integration coverage for local `static` / `shared` CMake installs in `cmd/install_integration_test.go`.

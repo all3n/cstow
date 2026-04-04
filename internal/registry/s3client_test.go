@@ -3,6 +3,8 @@ package registry
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -27,11 +29,89 @@ func TestArtifactObjectKeyWithoutHashIDKeepsTypedLayout(t *testing.T) {
 	)
 }
 
+func TestArtifactObjectKeyWithHashIDAndUntypedArtifact(t *testing.T) {
+	assert.Equal(t,
+		"prefix/fmt/10.2.1/gcc13-cxx17-linux-x86_64/hash-abc123.tar.zst",
+		artifactObjectKey("prefix", "fmt", "10.2.1", "gcc13-cxx17-linux-x86_64", "", "hash-abc123"),
+	)
+}
+
 func TestLegacyArtifactObjectKey(t *testing.T) {
 	assert.Equal(t,
 		"prefix/fmt/10.2.1/gcc13-cxx17-linux-x86_64.tar.zst",
 		legacyArtifactObjectKey("prefix", "fmt", "10.2.1", "gcc13-cxx17-linux-x86_64"),
 	)
+}
+
+func TestArtifactUploadKeysWithHashTypedIncludeCompatibilityAliases(t *testing.T) {
+	keys := artifactUploadKeys("prefix", "fmt", "10.2.1", "gcc13-cxx17-linux-x86_64", "shared", "hash-abc123")
+	assert.Equal(t, []string{
+		"prefix/fmt/10.2.1/gcc13-cxx17-linux-x86_64/shared/hash-abc123.tar.zst",
+		"prefix/fmt/10.2.1/gcc13-cxx17-linux-x86_64/shared.tar.zst",
+	}, keys)
+	assert.NotContains(t, keys, "prefix/fmt/10.2.1/gcc13-cxx17-linux-x86_64.tar.zst")
+}
+
+func TestArtifactUploadKeysWithHashUntypedIncludeLegacyAliasOnly(t *testing.T) {
+	keys := artifactUploadKeys("prefix", "fmt", "10.2.1", "gcc13-cxx17-linux-x86_64", "", "hash-abc123")
+	assert.Equal(t, []string{
+		"prefix/fmt/10.2.1/gcc13-cxx17-linux-x86_64/hash-abc123.tar.zst",
+		"prefix/fmt/10.2.1/gcc13-cxx17-linux-x86_64.tar.zst",
+	}, keys)
+}
+
+func TestArtifactDownloadKeysWithHashTypedProbeHashThenTypedThenLegacy(t *testing.T) {
+	keys := artifactDownloadKeys("prefix", "fmt", "10.2.1", "gcc13-cxx17-linux-x86_64", "shared", "hash-abc123")
+	assert.Equal(t, []string{
+		"prefix/fmt/10.2.1/gcc13-cxx17-linux-x86_64/shared/hash-abc123.tar.zst",
+		"prefix/fmt/10.2.1/gcc13-cxx17-linux-x86_64/shared.tar.zst",
+		"prefix/fmt/10.2.1/gcc13-cxx17-linux-x86_64.tar.zst",
+	}, keys)
+}
+
+func TestArtifactDownloadKeysWithHashUntypedProbeHashThenLegacy(t *testing.T) {
+	keys := artifactDownloadKeys("prefix", "fmt", "10.2.1", "gcc13-cxx17-linux-x86_64", "", "hash-abc123")
+	assert.Equal(t, []string{
+		"prefix/fmt/10.2.1/gcc13-cxx17-linux-x86_64/hash-abc123.tar.zst",
+		"prefix/fmt/10.2.1/gcc13-cxx17-linux-x86_64.tar.zst",
+	}, keys)
+}
+
+func TestDownloadFirstMatchingContinuesOnHashMismatch(t *testing.T) {
+	good := []byte("good-bytes")
+	sum := sha256.Sum256(good)
+	requestedHash := fmt.Sprintf("%x", sum)
+
+	keys := []string{"hash-key", "typed-key", "legacy-key"}
+	payloads := map[string][]byte{
+		"hash-key":   []byte("wrong-bytes"),
+		"typed-key":  []byte("also-wrong"),
+		"legacy-key": good,
+	}
+
+	data, err := downloadFirstMatching(keys, requestedHash, func(key string) ([]byte, error) {
+		return payloads[key], nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, good, data)
+}
+
+func TestDownloadFirstMatchingFailsWhenAllHashesMismatch(t *testing.T) {
+	good := []byte("good-bytes")
+	sum := sha256.Sum256(good)
+	requestedHash := fmt.Sprintf("%x", sum)
+
+	keys := []string{"hash-key", "typed-key"}
+	payloads := map[string][]byte{
+		"hash-key":  []byte("wrong-bytes"),
+		"typed-key": []byte("also-wrong"),
+	}
+
+	_, err := downloadFirstMatching(keys, requestedHash, func(key string) ([]byte, error) {
+		return payloads[key], nil
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "hash mismatch")
 }
 
 func TestManifestRoundTripIncludesBuildType(t *testing.T) {
@@ -81,6 +161,54 @@ func TestManifestRoundTripIncludesHashMetadata(t *testing.T) {
 	require.Len(t, decoded.Artifacts, 1)
 	assert.Equal(t, "aabbccddeeff00112233445566778899", decoded.Artifacts[0].HashID)
 	assert.Equal(t, []string{"lto", "asan"}, decoded.Artifacts[0].BuildTags)
+}
+
+func TestFindArtifactByHashIDExactMatch(t *testing.T) {
+	manifest := &Manifest{
+		Name:    "fmt",
+		Version: "10.2.1",
+		Artifacts: []Artifact{
+			{ABITag: "abi-1", BuildType: "shared", HashID: "abc123456789"},
+			{ABITag: "abi-2", BuildType: "static", HashID: "def987654321"},
+		},
+	}
+
+	artifact, err := FindArtifactByHashID(manifest, "abc123456789")
+	require.NoError(t, err)
+	require.NotNil(t, artifact)
+	assert.Equal(t, "abi-1", artifact.ABITag)
+	assert.Equal(t, "shared", artifact.BuildType)
+}
+
+func TestFindArtifactByHashIDAmbiguousPrefix(t *testing.T) {
+	manifest := &Manifest{
+		Name:    "fmt",
+		Version: "10.2.1",
+		Artifacts: []Artifact{
+			{ABITag: "abi-1", BuildType: "shared", HashID: "abc123456789"},
+			{ABITag: "abi-2", BuildType: "static", HashID: "abc987654321"},
+		},
+	}
+
+	artifact, err := FindArtifactByHashID(manifest, "abc")
+	require.Error(t, err)
+	assert.Nil(t, artifact)
+	assert.Contains(t, err.Error(), `hash_id prefix "abc" is ambiguous`)
+}
+
+func TestFindArtifactByHashIDNotFound(t *testing.T) {
+	manifest := &Manifest{
+		Name:    "fmt",
+		Version: "10.2.1",
+		Artifacts: []Artifact{
+			{ABITag: "abi-1", BuildType: "shared", HashID: "abc123456789"},
+		},
+	}
+
+	artifact, err := FindArtifactByHashID(manifest, "zzz")
+	require.Error(t, err)
+	assert.Nil(t, artifact)
+	assert.Contains(t, err.Error(), `artifact with hash_id prefix "zzz" not found`)
 }
 
 func TestSelectArtifactPrefersExactBuildType(t *testing.T) {

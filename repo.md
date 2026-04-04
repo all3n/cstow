@@ -1,6 +1,6 @@
 # cstow Repository 系统说明
 
-更新时间：2026-04-02
+更新时间：2026-04-04
 
 这份文档描述的是 **当前仓库中的 repository 系统 MVP**，不是最初的理想终态设计。
 
@@ -25,6 +25,7 @@
 
 - `cstow publish`
 - `cstow fetch`
+- `cstow artifact show <hashid>`
 
 核心实现：
 
@@ -88,6 +89,18 @@
 - 拉源码
 - 本地构建
 - 安装到 `~/.cstow/cache/<name>/<version>/<abi_tag>/<build_type>/`
+
+### 3. publish 的两种当前模式
+
+`cstow publish` 目前有两种明确模式：
+
+1. 项目目录发布（不带包名参数）
+   - 从当前项目 `cstow.toml` 读取 `package.name/version`
+   - 默认从 `build/release`（不存在则 `build/debug`）打包上传
+2. 本地 artifact 直发（带包名参数）
+   - 用法：`cstow publish <name> --version <ver> --abi-tag <abi> --build-type <type>`
+   - 从本地 artifact 索引或 cache 路径定位对应 `(name, version, abi_tag, build_type)` 后打包上传
+   - 本模式下 `--version` / `--abi-tag` / `--build-type` 都是必填
 
 ## 三、全局配置：`~/.cstow/config.toml`
 
@@ -490,7 +503,27 @@ cstow install fmt@^10
 2. 让 patch、archive、recipe 依赖递归真正生效
 3. 把 merged flags 和 artifact 校验真正接进 builder
 
-## 十二、与其他文档的关系
+## 十二、`hash_id` / `build_tags` 与按哈希操作
+
+当前实现里，artifact 元数据新增了：
+
+- `hash_id`
+  - 内容寻址 ID；第一版中它就是上传包（`.tar.zst`）的完整 SHA-256 十六进制串
+  - `publish` 打包后按上传字节计算 SHA-256，并同时写入 manifest 的 `hash_id` 与 `sha256`
+- `build_tags`
+  - 额外构建标签元数据（来自 `publish --build-tag key=value`）
+  - 会写入 manifest 与本地 SQLite artifact 索引
+
+与 `hash_id` 相关的 CLI：
+
+- `cstow artifact show <hashid>`
+  - 在本地 SQLite 索引中按完整 `hash_id` 或唯一前缀查询并展示 artifact 元数据
+- `cstow fetch --artifact <hashid>`
+  - 按完整 `hash_id` 或唯一前缀拉取
+  - 若本地索引命中且路径存在，直接复用本地 artifact 并链接到 `./cstow_deps`
+  - 否则会基于 lock/config 中可候选的包版本加载 manifest，用 `hash_id` 匹配后下载并写回本地索引
+
+## 十三、与其他文档的关系
 
 - `AGENTS.md`
   - 面向代理/开发协作，强调当前真实能力边界
