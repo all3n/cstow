@@ -26,6 +26,7 @@ When changing behavior, follow the code as it exists today instead of the origin
 - `internal/builder/` currently supports CMake installs for `static` / `shared` libraries and `header-only` packages. It does not yet implement `make`, `autoconf`, `meson`, or generic custom builders.
 - `cmd/install` has integration coverage for local `static` / `shared` CMake installs in `cmd/install_integration_test.go`.
 - dependency `build_type` now flows through `cstow.toml`, `cstow.lock`, cache paths, and registry artifact keys; cache reads remain backward-compatible with legacy `<abi>` directories.
+- local cached artifacts are indexed in `~/.cstow/cstow.db` (SQLite); the filesystem cache is still the source of truth. `cstow artifact list` reads the index, `cstow artifact sync` rescans the cache, and `cstow artifact show <hashid>` looks up by hash prefix.
 - `repo.md` and `docs/superpowers/specs/` describe the intended repository system. They are useful, but some parts are still ahead of the current implementation.
 
 Do not mark a feature as "done" unless it is wired through the CLI and covered by tests.
@@ -46,7 +47,7 @@ Use targeted package tests while iterating, then finish with `go test ./...` whe
 ## Code Map
 
 - `cmd/`
-  - CLI surface: `init`, `build`, `add`, `fetch`, `publish`, `install`, `migrate`, `ci`, `workspace`, `checkabi`
+  - CLI surface: `init`, `build`, `add`, `fetch`, `publish`, `install`, `migrate`, `ci`, `workspace`, `checkabi`, `artifact list`, `artifact sync`, `artifact show`
 - `internal/config/`
   - Project config (`cstow.toml`) and user config (`~/.cstow/config.toml`)
 - `internal/project/`
@@ -59,6 +60,8 @@ Use targeted package tests while iterating, then finish with `go test ./...` whe
   - dependency declaration mutation and lock-file generation
 - `internal/registry/`
   - S3-compatible publish/download/manifest operations
+- `internal/artifactdb/`
+  - local SQLite artifact index (store, upsert, list, sync, hash_id lookup)
 - `internal/repository/`
   - repository package definitions, version lookup, layered build config merge, source fetch
 - `internal/builder/`

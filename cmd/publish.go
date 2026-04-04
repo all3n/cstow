@@ -71,7 +71,6 @@ var publishCmd = &cobra.Command{
 			name       string
 			pkgStd     string
 			publishDir string
-			localMode  bool
 		)
 
 		switch len(args) {
@@ -96,7 +95,6 @@ var publishCmd = &cobra.Command{
 				publishDir = "build/debug"
 			}
 		case 1:
-			localMode = true
 			name = args[0]
 			if version == "" {
 				return fmt.Errorf("--version is required when publishing a local artifact")
@@ -161,20 +159,18 @@ var publishCmd = &cobra.Command{
 			return fmt.Errorf("upload manifest: %w", err)
 		}
 
-		if localMode {
-			cache := resolver.NewFSCache()
-			if err := indexSuccessfulArtifact(cache, indexedArtifact{
-				Name:       name,
-				Version:    version,
-				ABITag:     abiTag,
-				BuildType:  buildType,
-				HashID:     hashID,
-				BuildTags:  buildTags,
-				InstallDir: publishDir,
-				Origin:     "registry",
-			}); err != nil {
-				return err
-			}
+		cache := resolver.NewFSCache()
+		if err := indexSuccessfulArtifact(cache, indexedArtifact{
+			Name:       name,
+			Version:    version,
+			ABITag:     abiTag,
+			BuildType:  buildType,
+			HashID:     hashID,
+			BuildTags:  buildTags,
+			InstallDir: publishDir,
+			Origin:     "registry",
+		}); err != nil {
+			return err
 		}
 
 		fmt.Printf(">> published %s@%s\n", name, version)

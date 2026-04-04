@@ -24,6 +24,8 @@
 - `cstow install` 已可基于 repository recipe 走源码构建路径
 - `cmd/install` 当前已有集成测试覆盖 static / shared CMake 库的本地安装
 - cache / registry artifact key 已按 `<abi>/<build_type>` 区分，旧路径和旧 key 仍可回读
+- local artifact metadata 已在 `~/.cstow/cstow.db` 中用 SQLite 索引，支持 `hash_id` 和 `build_tags`
+- `cstow artifact list` / `cstow artifact sync` / `cstow artifact show <hashid>` 已可用
 - `workspace`、`legacy migrate`、`hooks`、`.tar.zst` 打包/解包 已有初版实现
 
 ### 2. 已实现但未闭环

@@ -33,6 +33,8 @@ var fetchCmd = &cobra.Command{
 	Use:   "fetch",
 	Short: "Fetch dependencies into local cache, falling back to source builds when needed",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		defer resetFetchFlagState(cmd)
+
 		artifactHashID, _ := cmd.Flags().GetString("artifact")
 		if strings.TrimSpace(artifactHashID) != "" {
 			return fetchByHashID(cmd, artifactHashID)
@@ -72,13 +74,13 @@ var fetchCmd = &cobra.Command{
 
 		cache := resolver.NewFSCache()
 
-		var s3client *registry.S3Client
+		var s3client fetchRegistryClient
 		globalCfg, err := config.LoadGlobal()
 		if err != nil {
 			return fmt.Errorf("load global config: %w", err)
 		}
 		if reg, regErr := config.ResolvePrimaryRegistry(cfg.Registries, globalCfg); regErr == nil {
-			s3client, err = registry.NewS3Client(context.Background(), reg)
+			s3client, err = fetchNewRegistryClient(context.Background(), reg)
 			if err != nil {
 				return fmt.Errorf("create S3 client: %w", err)
 			}
@@ -137,6 +139,8 @@ var fetchCmd = &cobra.Command{
 				var data []byte
 				var fetchedABITag string
 				var fetchedBuildType string
+				var fetchedHashID string
+				var fetchedBuildTags []string
 				var downloadErr error
 
 				manifest, manifestErr := s3client.GetManifest(context.Background(), pkg.Name, pkg.Version)
@@ -176,6 +180,8 @@ var fetchCmd = &cobra.Command{
 						Version:    pkg.Version,
 						ABITag:     fetchedABITag,
 						BuildType:  fetchedBuildType,
+						HashID:     fetchedHashID,
+						BuildTags:  fetchedBuildTags,
 						InstallDir: destDir,
 						Origin:     "registry",
 					}); err != nil {
@@ -532,4 +538,22 @@ func isArtifactNotFoundError(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "not found")
+}
+
+func resetFetchFlagState(cmd *cobra.Command) {
+	resetFetchFlag := func(name string) {
+		flag := cmd.Flags().Lookup(name)
+		if flag == nil {
+			return
+		}
+		if replacer, ok := flag.Value.(interface{ Replace([]string) error }); ok {
+			_ = replacer.Replace(nil)
+		} else {
+			_ = flag.Value.Set(flag.DefValue)
+		}
+		flag.Changed = false
+	}
+	resetFetchFlag("artifact")
+	resetFetchFlag("toolchain")
+	resetFetchFlag("source-fallback")
 }
