@@ -4,14 +4,15 @@ import "slices"
 
 // MergedBuildConfig is the fully resolved build configuration for one dependency.
 type MergedBuildConfig struct {
-	System       string
-	CMakeDefines []string
-	CXXFlags     []string
-	LinkFlags    []string
-	IncludeDirs  []string
-	Libs         []string
-	Patch        string
-	BuildType    string // static, shared, header-only
+	System         string
+	CMakeDefines   []string
+	CXXFlags       []string
+	LinkFlags      []string
+	IncludeDirs    []string
+	Libs           []string
+	InstallTargets []string
+	Patch          string
+	BuildType      string // static, shared, header-only
 }
 
 // Merge applies configuration layers in priority order (lowest → highest):
@@ -22,10 +23,11 @@ type MergedBuildConfig struct {
 //  5. version-specific cmake override (replaces defines/link_flags if non-empty; cxx_flags append; compiler appends)
 func Merge(pkg *PackageDef, ver *VersionOverride, toolchainKind, profile, goos string) *MergedBuildConfig {
 	out := &MergedBuildConfig{
-		System:      pkg.Build.System,
-		IncludeDirs: slices.Clone(pkg.Artifacts.IncludeDirs),
-		Libs:        slices.Clone(pkg.Artifacts.Libs),
-		BuildType:   pkg.Build.Type,
+		System:         pkg.Build.System,
+		IncludeDirs:    slices.Clone(pkg.Artifacts.IncludeDirs),
+		Libs:           slices.Clone(pkg.Artifacts.Libs),
+		InstallTargets: slices.Clone(pkg.Build.CMake.InstallTargets),
+		BuildType:      pkg.Build.Type,
 	}
 
 	// Version override can change build type
@@ -60,20 +62,25 @@ func Merge(pkg *PackageDef, ver *VersionOverride, toolchainKind, profile, goos s
 	}
 
 	// Layer 5: version-specific override
-	if ver != nil && ver.Build != nil {
-		if ver.Build.CMake != nil {
-			if len(ver.Build.CMake.Defines) > 0 {
-				out.CMakeDefines = slices.Clone(ver.Build.CMake.Defines)
+	if ver != nil {
+		if ver.Build != nil {
+			if ver.Build.CMake != nil {
+				if len(ver.Build.CMake.Defines) > 0 {
+					out.CMakeDefines = slices.Clone(ver.Build.CMake.Defines)
+				}
+				out.CXXFlags = append(out.CXXFlags, ver.Build.CMake.CXXFlags...)
+				if len(ver.Build.CMake.LinkFlags) > 0 {
+					out.LinkFlags = slices.Clone(ver.Build.CMake.LinkFlags)
+				}
+				if len(ver.Build.CMake.InstallTargets) > 0 {
+					out.InstallTargets = slices.Clone(ver.Build.CMake.InstallTargets)
+				}
 			}
-			out.CXXFlags = append(out.CXXFlags, ver.Build.CMake.CXXFlags...)
-			if len(ver.Build.CMake.LinkFlags) > 0 {
-				out.LinkFlags = slices.Clone(ver.Build.CMake.LinkFlags)
+			if co, ok := ver.Build.Compiler[toolchainKind]; ok {
+				out.CMakeDefines = append(out.CMakeDefines, co.Defines...)
+				out.CXXFlags = append(out.CXXFlags, co.CXXFlags...)
+				out.LinkFlags = append(out.LinkFlags, co.LinkFlags...)
 			}
-		}
-		if co, ok := ver.Build.Compiler[toolchainKind]; ok {
-			out.CMakeDefines = append(out.CMakeDefines, co.Defines...)
-			out.CXXFlags = append(out.CXXFlags, co.CXXFlags...)
-			out.LinkFlags = append(out.LinkFlags, co.LinkFlags...)
 		}
 		out.Patch = ver.Patch
 	}

@@ -305,7 +305,8 @@ build_type = "shared"
 - `type = "git"`
   - 已支持
 - `type = "archive"`
-  - 结构已支持，但 `internal/repository/source.go` 中的 `FetchArchive` 还没有实现
+  - 已支持 `.tar.gz` / `.tgz` / `.zip`；其他格式尝试调用系统 `tar`
+  - 支持 `SHA256` 校验
 
 ### `artifacts` 字段当前状态
 
@@ -357,9 +358,9 @@ cxx_flags = ["-Wno-unused-private-field"]
 - `build.compiler.<kind>`
   - 追加到对应编译器层
 - `patch`
-  - 会进入 merged config，但当前构建前 **不会自动应用**
+  - 自动应用（需系统已安装 `patch` 命令，且补丁文件存放在 `patches/` 目录下）
 - `source.sha256`
-  - 会被解析，但当前源码拉取流程 **不会做校验**
+  - `archive` 拉取时会进行强校验
 
 ## 七、Finder 行为
 
@@ -454,9 +455,6 @@ cstow install fmt@^10
 
 ### 当前 builder 还不支持或未打通的部分
 
-- `archive` source 拉取
-- patch 自动应用
-- recipe 依赖递归构建
 - `make` / `autoconf` / `meson` / `custom`
 - 根据 `install_targets` 或 `artifacts.libs` 做安装验证
 - 将 `install` 结果自动接入项目的 `cstow_deps`
@@ -529,7 +527,7 @@ cstow install fmt@^10
   - 面向代理/开发协作，强调当前真实能力边界
 - `PLAN.md`
   - 面向路线图，说明下一阶段优先级
-- `repo.md`
+- `README.md`
   - 面向 repository 系统本身的“当前可用规格”
 
 如果三者冲突，以当前代码行为为准，并及时回写文档。

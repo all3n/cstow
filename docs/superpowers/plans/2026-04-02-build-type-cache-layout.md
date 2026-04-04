@@ -52,7 +52,7 @@
 ### Task 4: Update documentation and verify the full repository
 
 **Files:**
-- Modify: `repo.md`
+- Modify: `README.md`
 - Modify: `PLAN.md`
 - Modify: `AGENTS.md`
 

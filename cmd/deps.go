@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -157,20 +158,51 @@ func installFromRepository(name, versionConstraint string, opts repositoryInstal
 	}
 	defer os.RemoveAll(tmpDir)
 
-	sourcePath, err := repository.FetchSource(pkg.Def.Source, pkg.Version, tmpDir)
+	sourcePath, err := repository.FetchSource(pkg.Def.Source, pkg.Version, expectedSHA256(pkg), tmpDir)
 	if err != nil {
 		return nil, fmt.Errorf("fetch source: %w", err)
 	}
 
+	if merged.Patch != "" {
+		if !builder.IsPatchInstalled() {
+			return nil, fmt.Errorf("patch command not found on PATH (required to apply %s)", merged.Patch)
+		}
+		patchPath := filepath.Join(pkg.PackageDir, "patches", merged.Patch)
+		fmt.Fprintf(opts.Stdout, ">> applying patch %s\n", merged.Patch)
+		if err := builder.ApplyPatch(patchPath, sourcePath); err != nil {
+			return nil, fmt.Errorf("apply patch: %w", err)
+		}
+	}
+
+	var prefixPaths []string
+	if len(pkg.Def.Deps) > 0 {
+		fmt.Fprintf(opts.Stdout, ">> resolving %d dependencies for %s\n", len(pkg.Def.Deps), name)
+		for _, dep := range pkg.Def.Deps {
+			depBuildType := normalizeBuildType(dep.BuildType)
+			if depBuildType == "" {
+				depBuildType = "static"
+			}
+			depOpts := opts
+			depOpts.BuildType = depBuildType
+			depOpts.Force = false // default cache-first for dependencies
+			depResult, err := installFromRepository(dep.Name, dep.Version, depOpts)
+			if err != nil {
+				return nil, fmt.Errorf("dependency %s@%s: %w", dep.Name, dep.Version, err)
+			}
+			prefixPaths = append(prefixPaths, depResult.InstallDir)
+		}
+	}
+
 	result, err := builder.Build(builder.Options{
-		SourcePath: sourcePath,
-		InstallDir: installDir,
-		Config:     merged,
-		Toolchain:  opts.Context.Toolchain,
-		Profile:    opts.Context.Profile,
-		Jobs:       builder.GuessJobs(),
-		Stdout:     opts.Stdout,
-		Stderr:     opts.Stderr,
+		SourcePath:  sourcePath,
+		InstallDir:  installDir,
+		Config:      merged,
+		Toolchain:   opts.Context.Toolchain,
+		Profile:     opts.Context.Profile,
+		Jobs:        builder.GuessJobs(),
+		PrefixPaths: prefixPaths,
+		Stdout:      opts.Stdout,
+		Stderr:      opts.Stderr,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build %s %s: %w", name, pkg.Version, err)
@@ -294,4 +326,14 @@ func dependencyLinkTarget(pkg resolver.LockEntry, cachePath string) string {
 		return pkg.Path
 	}
 	return cachePath
+}
+
+func expectedSHA256(pkg *repository.ResolvedPkg) string {
+	if pkg.Override != nil && pkg.Override.Source != nil && pkg.Override.Source.SHA256 != "" {
+		return pkg.Override.Source.SHA256
+	}
+	if pkg.Def.Source.SHA256 != nil {
+		return pkg.Def.Source.SHA256[pkg.Version]
+	}
+	return ""
 }

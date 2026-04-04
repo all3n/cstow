@@ -28,10 +28,17 @@ type Package struct {
 }
 
 type Build struct {
-	Type    string   `toml:"type"`
-	Sources []string `toml:"sources"`
-	Include []string `toml:"include"`
-	Defines []string `toml:"defines"`
+	Type    string     `toml:"type"`
+	Sources []string   `toml:"sources"`
+	Include []string   `toml:"include"`
+	Defines []string   `toml:"defines"`
+	Flags   BuildFlags `toml:"flags"`
+}
+
+type BuildFlags struct {
+	CXXFlags  []string `toml:"cxx_flags"`
+	LinkFlags []string `toml:"link_flags"`
+	Defines   []string `toml:"defines"`
 }
 
 type Profile struct {

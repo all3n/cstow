@@ -170,7 +170,7 @@ func Merge(pkg *PackageDef, ver *VersionOverride,
            toolchainKind, profile, goos string) *MergedBuildConfig
 ```
 
-Layer 5 (version override) **replaces** rather than appends `cmake.defines` — matching `repo.md` spec. All other layers append.
+Layer 5 (version override) **replaces** rather than appends `cmake.defines` — matching `README.md` spec. All other layers append.
 
 ---
 

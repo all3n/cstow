@@ -1,11 +1,14 @@
 package builder
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/all3n/cstow/internal/repository"
 	"github.com/all3n/cstow/internal/toolchain"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestInstallDir(t *testing.T) {
@@ -68,4 +71,40 @@ func TestConfigureArgsBuildTypeOverridesConflictingBuildSharedDefine(t *testing.
 	assert.Contains(t, args, "-DBUILD_SHARED_LIBS=ON")
 	assert.NotContains(t, args, "-DBUILD_SHARED_LIBS=OFF")
 	assert.Contains(t, args, "-DFMT_INSTALL=ON")
+}
+
+func TestValidateInstall(t *testing.T) {
+	installDir := t.TempDir()
+
+	// 1. Success case
+	libPath := filepath.Join(installDir, "lib", "libtest.a")
+	require.NoError(t, os.MkdirAll(filepath.Dir(libPath), 0755))
+	require.NoError(t, os.WriteFile(libPath, []byte("lib"), 0644))
+
+	incPath := filepath.Join(installDir, "include", "test", "test.h")
+	require.NoError(t, os.MkdirAll(filepath.Dir(incPath), 0755))
+	require.NoError(t, os.WriteFile(incPath, []byte("h"), 0644))
+
+	opts := Options{
+		InstallDir: installDir,
+		Config: &repository.MergedBuildConfig{
+			Libs:        []string{"libtest.a"},
+			IncludeDirs: []string{"test"},
+		},
+	}
+	assert.NoError(t, ValidateInstall(opts))
+
+	// 2. Failure case - missing lib
+	opts.Config.Libs = []string{"libtest.a", "libmissing.a"}
+	err := ValidateInstall(opts)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "missing expected artifacts")
+	assert.Contains(t, err.Error(), "library \"libmissing.a\"")
+
+	// 3. Failure case - missing include
+	opts.Config.Libs = []string{"libtest.a"}
+	opts.Config.IncludeDirs = []string{"test", "missing"}
+	err = ValidateInstall(opts)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "include dir \"missing\"")
 }

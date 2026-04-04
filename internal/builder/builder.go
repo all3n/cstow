@@ -15,14 +15,15 @@ import (
 
 // Options holds all inputs for building a package from source.
 type Options struct {
-	SourcePath string
-	InstallDir string
-	Config     *repository.MergedBuildConfig
-	Toolchain  *toolchain.Toolchain
-	Profile    string
-	Jobs       int
-	Stdout     io.Writer
-	Stderr     io.Writer
+	SourcePath  string
+	InstallDir  string
+	Config      *repository.MergedBuildConfig
+	Toolchain   *toolchain.Toolchain
+	Profile     string
+	Jobs        int
+	PrefixPaths []string
+	Stdout      io.Writer
+	Stderr      io.Writer
 }
 
 // Result holds the outcome of a successful build.
@@ -72,7 +73,54 @@ func Build(opts Options) (*Result, error) {
 		return nil, fmt.Errorf("cmake install: %w", err)
 	}
 
+	if err := ValidateInstall(opts); err != nil {
+		return nil, fmt.Errorf("install validation: %w", err)
+	}
+
 	return &Result{InstallDir: opts.InstallDir}, nil
+}
+
+// ValidateInstall checks that expected artifacts exist after build.
+func ValidateInstall(opts Options) error {
+	var missing []string
+
+	// Check libraries
+	for _, lib := range opts.Config.Libs {
+		found := false
+		searchPaths := []string{
+			filepath.Join(opts.InstallDir, "lib", lib),
+			filepath.Join(opts.InstallDir, "bin", lib),
+			filepath.Join(opts.InstallDir, lib),
+		}
+		for _, p := range searchPaths {
+			if _, err := os.Stat(p); err == nil {
+				found = true
+				break
+			}
+		}
+		if !found {
+			missing = append(missing, fmt.Sprintf("library %q", lib))
+		}
+	}
+
+	// Check include directories (if not header-only, which has its own logic)
+	if opts.Config.BuildType != "header-only" {
+		for _, inc := range opts.Config.IncludeDirs {
+			p := filepath.Join(opts.InstallDir, inc)
+			if _, err := os.Stat(p); err != nil {
+				// Also check if it's relative to 'include'
+				p2 := filepath.Join(opts.InstallDir, "include", inc)
+				if _, err := os.Stat(p2); err != nil {
+					missing = append(missing, fmt.Sprintf("include dir %q", inc))
+				}
+			}
+		}
+	}
+
+	if len(missing) > 0 {
+		return fmt.Errorf("missing expected artifacts: %s", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 func configureArgs(opts Options, buildDir string) []string {
@@ -86,6 +134,9 @@ func configureArgs(opts Options, buildDir string) []string {
 		"-B", buildDir,
 		fmt.Sprintf("-DCMAKE_BUILD_TYPE=%s", cmakeType),
 		fmt.Sprintf("-DCMAKE_INSTALL_PREFIX=%s", opts.InstallDir),
+	}
+	if len(opts.PrefixPaths) > 0 {
+		args = append(args, fmt.Sprintf("-DCMAKE_PREFIX_PATH=%s", strings.Join(opts.PrefixPaths, ";")))
 	}
 	if opts.Toolchain != nil {
 		args = append(args, opts.Toolchain.CMakeFlags()...)

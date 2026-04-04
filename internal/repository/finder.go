@@ -34,10 +34,11 @@ func NewFinderWithPaths(paths []string) *Finder {
 
 // ResolvedPkg is the result of a successful Find call.
 type ResolvedPkg struct {
-	Def      *PackageDef
-	Version  string           // resolved concrete version satisfying the constraint
-	Override *VersionOverride // nil if no version-specific override file exists
-	RepoPath string           // which repository root matched
+	Def        *PackageDef
+	Version    string           // resolved concrete version satisfying the constraint
+	Override   *VersionOverride // nil if no version-specific override file exists
+	RepoPath   string           // which repository root matched
+	PackageDir string           // path to the package directory within the repository
 }
 
 // Find searches all repository paths for name matching versionConstraint.
@@ -46,7 +47,8 @@ func (f *Finder) Find(name, versionConstraint string) (*ResolvedPkg, error) {
 	letter := indexLetter(name)
 
 	for _, root := range f.searchPaths {
-		pkgFile := filepath.Join(root, letter, name, "package.toml")
+		pkgDir := filepath.Join(root, letter, name)
+		pkgFile := filepath.Join(pkgDir, "package.toml")
 		if _, err := os.Stat(pkgFile); err != nil {
 			continue
 		}
@@ -61,13 +63,14 @@ func (f *Finder) Find(name, versionConstraint string) (*ResolvedPkg, error) {
 			continue // no matching version in this root, try next
 		}
 
-		override := loadVersionOverride(filepath.Join(root, letter, name, "versions"), matched)
+		override := loadVersionOverride(filepath.Join(pkgDir, "versions"), matched)
 
 		return &ResolvedPkg{
-			Def:      def,
-			Version:  matched,
-			Override: override,
-			RepoPath: root,
+			Def:        def,
+			Version:    matched,
+			Override:   override,
+			RepoPath:   root,
+			PackageDir: pkgDir,
 		}, nil
 	}
 

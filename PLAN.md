@@ -27,6 +27,8 @@
 - local artifact metadata 已在 `~/.cstow/cstow.db` 中用 SQLite 索引，支持 `hash_id` 和 `build_tags`
 - `cstow artifact list` / `cstow artifact sync` / `cstow artifact show <hashid>` 已可用
 - `workspace`、`legacy migrate`、`hooks`、`.tar.zst` 打包/解包 已有初版实现
+- `archive` 源码拉取和解包已支持，支持 `.tar.gz` 和 `.zip` 格式
+- 源码构建前已支持自动应用版本特定的 `patch` 补丁
 
 ### 2. 已实现但未闭环
 
@@ -36,9 +38,8 @@
 - `build` 构建的是“当前项目”，不会直接消费 repository recipe 来自动构建第三方依赖
 - `fetch` 已支持 registry 缺失时回退到 repository source build，并会在 manifest 可用时按 `abi + build_type` 选 artifact
 - `install` 虽然会 merge repository 配置，但还没有递归构建 recipe 依赖
-- version override 中的 `patch` 已进入 merged config，但实际构建前没有应用补丁
-- `archive` 源码拉取还没有实现，当前基本只支持 git source
-- merged `CXXFlags` / `LinkFlags` 已进入当前 `install` 的 CMake configure 链路，但 `artifacts` / `install_targets` 还没有形成安装结果校验闭环
+- archive 源码拉取和解包已在 `FetchArchive` 中实现
+- `merged` `CXXFlags` / `LinkFlags` 已进入当前 `install` 的 CMake configure 链路，但 `artifacts` / `install_targets` 还没有形成安装结果校验闭环
 - `build` 命令对项目 `build.defines`、`build.sources`、profile/hook 生命周期的利用还比较浅
 - `fetch` 已开始使用 manifest 做 artifact 选择，下载后 SHA256 校验已实现
 - workspace 目前是串行构建，没有成员依赖排序、共享 lock、并行调度
@@ -97,12 +98,12 @@
 
 ### 重点任务
 
-- 实现 `archive` source 下载和解包
-- 在源码构建前应用 version / compiler / platform patch
-- 递归处理 repository package 自身依赖
-- 让 merged `CXXFlags` / `LinkFlags` 在 `build` / `install` 两条链路上保持一致，并补上安装结果校验
-- 校验 `artifacts` / `install_targets` 是否与安装结果一致
-- 改善构建失败时的错误信息和临时目录排查体验
+- 实现 `archive` source 下载和解包 (已完成)
+- 在源码构建前应用 version / compiler / platform patch (已完成)
+- 递归处理 repository package 自身依赖 (已完成)
+- 让 merged `CXXFlags` / `LinkFlags` 在 `build` / `install` 两条链路上保持一致，并补上安装结果校验 (已完成)
+- 校验 `artifacts` / `install_targets` 是否与安装结果一致 (已完成)
+- 改善构建失败时的错误信息和临时目录排查体验 (已部分改善，增加了校验阶段的详细错误)
 
 ### 完成标准
 
@@ -175,4 +176,4 @@
   - 目标用户路径
   - 当前阻塞点
   - 完成标准
-- `AGENTS.md`、`PLAN.md`、`repo.md` 三者需要保持语义一致
+- `AGENTS.md`、`PLAN.md`、`README.md` 三者需要保持语义一致

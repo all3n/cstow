@@ -134,7 +134,7 @@ cstow build --toolchain auto|gcc|clang  # compiler selection
 ## Useful Docs
 
 - `PLAN.md` — current roadmap and priorities (in Chinese)
-- `repo.md` — repository package definition format and long-form design
+- `README.md` — repository package definition format and long-form design
 - `docs/superpowers/specs/2026-03-31-repository-system-design.md`
 - `docs/superpowers/specs/2026-04-01-repository-core-design.md`
 - `docs/superpowers/plans/2026-04-01-repository-core.md`

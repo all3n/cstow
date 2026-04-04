@@ -187,11 +187,25 @@ func appendCMakeConfigArgs(args []string, cfg *config.Config, profile string) []
 		args = append(args, fmt.Sprintf("-DCMAKE_INCLUDE_PATH=%s", strings.Join(cfg.Build.Include, ";")))
 	}
 
+	// Inject build.flags
+	if len(cfg.Build.Flags.CXXFlags) > 0 {
+		args = append(args, fmt.Sprintf("-DCMAKE_CXX_FLAGS=%s", strings.Join(cfg.Build.Flags.CXXFlags, " ")))
+	}
+	if len(cfg.Build.Flags.LinkFlags) > 0 {
+		joined := strings.Join(cfg.Build.Flags.LinkFlags, " ")
+		args = append(args,
+			fmt.Sprintf("-DCMAKE_EXE_LINKER_FLAGS=%s", joined),
+			fmt.Sprintf("-DCMAKE_SHARED_LINKER_FLAGS=%s", joined),
+			fmt.Sprintf("-DCMAKE_MODULE_LINKER_FLAGS=%s", joined),
+		)
+	}
+
 	// Apply profile-specific settings
 	if p, ok := cfg.Profiles[profile]; ok {
 		if p.LTO {
 			args = append(args, "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON")
 		}
+		// Also apply profile flags if present (not currently in Config struct but in PLAN.md spirit)
 	}
 
 	return args
