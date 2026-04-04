@@ -15,8 +15,8 @@ import (
 
 func TestArtifactObjectKeyIncludesBuildType(t *testing.T) {
 	assert.Equal(t,
-		"prefix/fmt/10.2.1/gcc13-cxx17-linux-x86_64/shared.tar.zst",
-		artifactObjectKey("prefix", "fmt", "10.2.1", "gcc13-cxx17-linux-x86_64", "shared"),
+		"prefix/fmt/10.2.1/gcc13-cxx17-linux-x86_64/shared/hash-abc123.tar.zst",
+		artifactObjectKey("prefix", "fmt", "10.2.1", "gcc13-cxx17-linux-x86_64", "shared", "hash-abc123"),
 	)
 }
 
@@ -48,6 +48,32 @@ func TestManifestRoundTripIncludesBuildType(t *testing.T) {
 	require.NoError(t, toml.Unmarshal(buf.Bytes(), &decoded))
 	require.Len(t, decoded.Artifacts, 1)
 	assert.Equal(t, "shared", decoded.Artifacts[0].BuildType)
+}
+
+func TestManifestRoundTripIncludesHashMetadata(t *testing.T) {
+	manifest := &Manifest{
+		Name:    "fmt",
+		Version: "10.2.1",
+		Artifacts: []Artifact{
+			{
+				ABITag:    "gcc13-cxx17-linux-x86_64",
+				BuildType: "shared",
+				HashID:    "aabbccddeeff00112233445566778899",
+				BuildTags: []string{"lto", "asan"},
+				SHA256:    "abc123",
+				Size:      42,
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, toml.NewEncoder(&buf).Encode(manifest))
+
+	var decoded Manifest
+	require.NoError(t, toml.Unmarshal(buf.Bytes(), &decoded))
+	require.Len(t, decoded.Artifacts, 1)
+	assert.Equal(t, "aabbccddeeff00112233445566778899", decoded.Artifacts[0].HashID)
+	assert.Equal(t, []string{"lto", "asan"}, decoded.Artifacts[0].BuildTags)
 }
 
 func TestSelectArtifactPrefersExactBuildType(t *testing.T) {

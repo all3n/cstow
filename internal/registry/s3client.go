@@ -30,11 +30,13 @@ type Manifest struct {
 
 // Artifact is one pre-compiled binary artifact
 type Artifact struct {
-	ABITag    string `toml:"abi_tag"`
-	BuildType string `toml:"build_type,omitempty"`
-	SHA256    string `toml:"sha256"`
-	Size      int64  `toml:"size"`
-	URL       string `toml:"url,omitempty"`
+	ABITag    string   `toml:"abi_tag"`
+	BuildType string   `toml:"build_type,omitempty"`
+	HashID    string   `toml:"hash_id,omitempty"`
+	BuildTags []string `toml:"build_tags,omitempty"`
+	SHA256    string   `toml:"sha256"`
+	Size      int64    `toml:"size"`
+	URL       string   `toml:"url,omitempty"`
 }
 
 // SelectArtifact chooses the best matching artifact from a manifest.
@@ -77,10 +79,10 @@ type S3Client struct {
 }
 
 type registryRuntimeConfig struct {
-	Profile     string
-	EndpointURL string
-	AccessKey   string
-	SecretKey   string
+	Profile      string
+	EndpointURL  string
+	AccessKey    string
+	SecretKey    string
 	UsePathStyle bool
 }
 
@@ -302,8 +304,11 @@ func defaultRegionForEndpoint(provider, endpoint string) string {
 }
 
 // Upload uploads a package artifact to the registry
-func artifactObjectKey(prefix, pkg, version, abiTag, buildType string) string {
-	return path.Join(prefix, pkg, version, abiTag, buildType+".tar.zst")
+func artifactObjectKey(prefix, pkg, version, abiTag, buildType, hashID string) string {
+	if hashID == "" {
+		return legacyArtifactObjectKey(prefix, pkg, version, abiTag)
+	}
+	return path.Join(prefix, pkg, version, abiTag, buildType, hashID+".tar.zst")
 }
 
 func legacyArtifactObjectKey(prefix, pkg, version, abiTag string) string {
@@ -311,7 +316,7 @@ func legacyArtifactObjectKey(prefix, pkg, version, abiTag string) string {
 }
 
 func (c *S3Client) Upload(ctx context.Context, pkg, version, abiTag, buildType string, data []byte) error {
-	key := artifactObjectKey(c.prefix, pkg, version, abiTag, buildType)
+	key := artifactObjectKey(c.prefix, pkg, version, abiTag, buildType, "")
 	_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(c.bucket),
 		Key:    aws.String(key),
@@ -348,7 +353,7 @@ func (c *S3Client) UploadManifest(ctx context.Context, pkg, version string, mani
 func (c *S3Client) Download(ctx context.Context, pkg, version, abiTag, buildType string) ([]byte, error) {
 	keys := []string{legacyArtifactObjectKey(c.prefix, pkg, version, abiTag)}
 	if buildType != "" {
-		keys = append([]string{artifactObjectKey(c.prefix, pkg, version, abiTag, buildType)}, keys...)
+		keys = append([]string{artifactObjectKey(c.prefix, pkg, version, abiTag, buildType, "")}, keys...)
 	}
 	var lastErr error
 	for _, key := range keys {
