@@ -71,9 +71,11 @@ var buildCmd = &cobra.Command{
 			cmakeType = "Release"
 		}
 
-		// Determine source directory (legacy projects may have custom root)
+		// Determine source directory: build.sources > legacy.root > "."
 		sourceDir := "."
-		if cfg.Legacy != nil && cfg.Legacy.Root != "" {
+		if len(cfg.Build.Sources) > 0 {
+			sourceDir = cfg.Build.Sources[0]
+		} else if cfg.Legacy != nil && cfg.Legacy.Root != "" {
 			sourceDir = cfg.Legacy.Root
 		}
 
@@ -83,6 +85,7 @@ var buildCmd = &cobra.Command{
 			fmt.Sprintf("-DCMAKE_BUILD_TYPE=%s", cmakeType),
 		}
 		cmakeArgs = append(cmakeArgs, tc.CMakeFlags()...)
+		cmakeArgs = appendCMakeConfigArgs(cmakeArgs, cfg, profile)
 
 		// Inject dependency paths from cstow_deps
 		depsDir := filepath.Join(".", "cstow_deps")
@@ -170,4 +173,26 @@ func checkDependenciesReady() error {
 		return fmt.Errorf("missing dependencies: %s\nRun `cstow fetch` to download them.", strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+// appendCMakeConfigArgs adds build.defines, build.include, and profile flags to cmake args.
+func appendCMakeConfigArgs(args []string, cfg *config.Config, profile string) []string {
+	// Inject build.defines as cmake -D flags
+	for _, d := range cfg.Build.Defines {
+		args = append(args, "-D"+d)
+	}
+
+	// Inject build.include paths
+	if len(cfg.Build.Include) > 0 {
+		args = append(args, fmt.Sprintf("-DCMAKE_INCLUDE_PATH=%s", strings.Join(cfg.Build.Include, ";")))
+	}
+
+	// Apply profile-specific settings
+	if p, ok := cfg.Profiles[profile]; ok {
+		if p.LTO {
+			args = append(args, "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON")
+		}
+	}
+
+	return args
 }

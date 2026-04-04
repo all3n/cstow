@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/all3n/cstow/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -89,4 +90,59 @@ version = 1
 
 	err = checkDependenciesReady()
 	assert.NoError(t, err)
+}
+
+func TestAppendCMakeConfigArgs_Defines(t *testing.T) {
+	cfg := &config.Config{
+		Build: config.Build{
+			Defines: []string{"FOO=BAR", "ENABLE_TESTS=ON"},
+		},
+	}
+	args := appendCMakeConfigArgs(nil, cfg, "debug")
+	assert.Contains(t, args, "-DFOO=BAR")
+	assert.Contains(t, args, "-DENABLE_TESTS=ON")
+}
+
+func TestAppendCMakeConfigArgs_IncludePaths(t *testing.T) {
+	cfg := &config.Config{
+		Build: config.Build{
+			Include: []string{"vendor/include", "third_party/include"},
+		},
+	}
+	args := appendCMakeConfigArgs(nil, cfg, "debug")
+	found := false
+	for _, a := range args {
+		if len(a) > len("-DCMAKE_INCLUDE_PATH=") && a[:len("-DCMAKE_INCLUDE_PATH=")] == "-DCMAKE_INCLUDE_PATH=" {
+			assert.Contains(t, a, "vendor/include")
+			assert.Contains(t, a, "third_party/include")
+			found = true
+		}
+	}
+	assert.True(t, found, "expected CMAKE_INCLUDE_PATH in args")
+}
+
+func TestAppendCMakeConfigArgs_ProfileLTO(t *testing.T) {
+	cfg := &config.Config{
+		Profiles: map[string]config.Profile{
+			"release": {LTO: true},
+		},
+	}
+	args := appendCMakeConfigArgs(nil, cfg, "release")
+	assert.Contains(t, args, "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON")
+}
+
+func TestAppendCMakeConfigArgs_ProfileNoLTO(t *testing.T) {
+	cfg := &config.Config{
+		Profiles: map[string]config.Profile{
+			"debug": {LTO: false},
+		},
+	}
+	args := appendCMakeConfigArgs(nil, cfg, "debug")
+	assert.NotContains(t, args, "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON")
+}
+
+func TestAppendCMakeConfigArgs_NoExtras(t *testing.T) {
+	cfg := &config.Config{}
+	args := appendCMakeConfigArgs(nil, cfg, "debug")
+	assert.Empty(t, args)
 }
