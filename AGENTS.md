@@ -1,6 +1,13 @@
-# CLAUDE.md
+# AGENTS.md (主 PROMPT)
 
-Symlinked to `AGENTS.md`. Update this file when agent-facing guidance changes.
+这是项目的**主 PROMPT** (Main Prompt) 文件。所有 AI Agent 在本项目中的行为准则、架构理解和开发规范都必须**绝对服从**本文件的定义。
+
+## 🎯 核心开发纪律 (Core Rules)
+
+1. **MVP 迭代驱动 (MVP-Driven)**：每次功能迭代都必须是一个最小可行性产品 (MVP)。不追求大而全，而是追求小而完整。
+2. **完整测试 (Fully Testable)**：每个 MVP 功能必须具备可测试性，并且在提交前必须经过完整的验证（包括单元测试/集成测试，以及真实的 CLI 路径走通）。
+3. **单次提交 (Atomic Commits)**：**完整测好功能，就提交一次**。严禁在功能未测试闭环前提交破碎的代码，严禁把一个独立的功能拆成毫无意义的多次微小 commit。
+4. **文档同步 (Docs as Code)**：如果代码实现偏离了设计文档，必须同步修改文档（重点是本文件及 `PLAN.md`），保持代码和提示词的语义一致。
 
 ## Project Snapshot
 
