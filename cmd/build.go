@@ -10,6 +10,7 @@ import (
 	"github.com/all3n/cstow/internal/abi"
 	"github.com/all3n/cstow/internal/config"
 	"github.com/all3n/cstow/internal/hooks"
+	"github.com/all3n/cstow/internal/resolver"
 	"github.com/all3n/cstow/internal/toolchain"
 	"github.com/spf13/cobra"
 )
@@ -47,6 +48,11 @@ var buildCmd = &cobra.Command{
 
 		fmt.Printf(">> toolchain: %s %d.%d.%d (%s)\n", tc.Kind, tc.Version[0], tc.Version[1], tc.Version[2], tc.Target)
 		fmt.Printf(">> abi: %s\n", abiTag.String())
+
+		// Check that all dependencies from cstow.lock are present
+		if err := checkDependenciesReady(); err != nil {
+			return err
+		}
 
 		// Run pre-build hook
 		dir, _ := os.Getwd()
@@ -131,4 +137,37 @@ func init() {
 	buildCmd.Flags().StringP("profile", "p", "debug", "build profile (debug|release)")
 	buildCmd.Flags().String("toolchain", "auto", "compiler to use (auto|gcc|clang|msvc)")
 	rootCmd.AddCommand(buildCmd)
+}
+
+func checkDependenciesReady() error {
+	lockPath := "cstow.lock"
+	_, err := os.ReadFile(lockPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("cstow.lock not found — run `cstow add` to declare dependencies first")
+		}
+		return fmt.Errorf("read cstow.lock: %w", err)
+	}
+
+	lf, err := resolver.LoadLock(lockPath)
+	if err != nil {
+		return fmt.Errorf("parse cstow.lock: %w", err)
+	}
+
+	if len(lf.Packages) == 0 {
+		return nil
+	}
+
+	var missing []string
+	for _, pkg := range lf.Packages {
+		pkgDir := filepath.Join("cstow_deps", pkg.Name)
+		if _, err := os.Stat(pkgDir); err != nil {
+			missing = append(missing, fmt.Sprintf("%s@%s", pkg.Name, pkg.Version))
+		}
+	}
+
+	if len(missing) > 0 {
+		return fmt.Errorf("missing dependencies: %s\nRun `cstow fetch` to download them.", strings.Join(missing, ", "))
+	}
+	return nil
 }
