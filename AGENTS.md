@@ -40,7 +40,9 @@ Use targeted package tests while iterating (`go test ./internal/registry/...`), 
 
 - `cmd/`
   - Commands: `init`, `build`, `add`, `fetch`, `publish`, `install`, `migrate`, `ci`, `workspace list`, `workspace build`, `check-abi`, `artifact list`, `artifact sync`, `artifact show`
-  - `deps.go` — shared types (`repositoryInstallContext`) used by `fetch` and `install`
+  - `fetch.go` — downloads prebuilt artifacts, uses manifest metadata for ABI/build_type matching, falls back to source builds, and indexes outcomes in artifact DB.
+  - `deps.go` — builds repository packages from source and indexes both fresh installs and cache hits in artifact DB.
+  - `artifact.go` — exposes artifact list and sync commands; SQLite is a query index over the cache.
 - `internal/config/`
   - Project config (`cstow.toml`) and user config (`~/.cstow/config.toml`)
 - `internal/project/`

@@ -26,6 +26,7 @@
 - cache / registry artifact key 已按 `<abi>/<build_type>` 区分，旧路径和旧 key 仍可回读
 - local artifact metadata 已在 `~/.cstow/cstow.db` 中用 SQLite 索引，支持 `hash_id` 和 `build_tags`
 - `cstow artifact list` / `cstow artifact sync` / `cstow artifact show <hashid>` 已可用
+- `fetch` 与 repository `install` 成功后会自动 upsert 本地 artifact 索引
 - `workspace`、`legacy migrate`、`hooks`、`.tar.zst` 打包/解包 已有初版实现
 - `archive` 源码拉取和解包已支持，支持 `.tar.gz` 和 `.zip` 格式
 - 源码构建前已支持自动应用版本特定的 `patch` 补丁

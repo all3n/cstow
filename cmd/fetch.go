@@ -65,7 +65,7 @@ var fetchCmd = &cobra.Command{
 		}
 
 		if len(lf.Packages) == 0 {
-			fmt.Println("No dependencies to fetch")
+			cmd.Println("No dependencies to fetch")
 			return nil
 		}
 
@@ -130,12 +130,12 @@ var fetchCmd = &cobra.Command{
 					pkg.ABITag = resolvedABITag
 					lockDirty = true
 				}
-				fmt.Printf("  [cached] %s@%s (%s, %s)\n", pkg.Name, pkg.Version, resolvedABITag, displayBuildType(buildType))
+				cmd.Printf("  [cached] %s@%s (%s, %s)\n", pkg.Name, pkg.Version, resolvedABITag, displayBuildType(buildType))
 				continue
 			}
 
 			if s3client != nil && !strings.HasPrefix(pkg.Source, "local") {
-				fmt.Printf("  [fetch] %s@%s ...\n", pkg.Name, pkg.Version)
+				cmd.Printf("  [fetch] %s@%s ...\n", pkg.Name, pkg.Version)
 
 				var data []byte
 				var fetchedABITag string
@@ -198,21 +198,21 @@ var fetchCmd = &cobra.Command{
 						pkg.ABITag = fetchedABITag
 						lockDirty = true
 					}
-					fmt.Printf("  [done]  %s@%s (%s) -> %s\n", pkg.Name, pkg.Version, displayBuildType(fetchedBuildType), destDir)
+					cmd.Printf("  [done]  %s@%s (%s) -> %s\n", pkg.Name, pkg.Version, displayBuildType(fetchedBuildType), destDir)
 					continue
 				}
 
-				fmt.Printf("  [warn] prebuilt artifact unavailable for %s@%s, trying source fallback\n", pkg.Name, pkg.Version)
+				cmd.Printf("  [warn] prebuilt artifact unavailable for %s@%s, trying source fallback\n", pkg.Name, pkg.Version)
 			}
 
 			if strings.HasPrefix(pkg.Source, "local") && pkg.Path != "" {
 				depPaths[pkg.Name] = pkg.Path
-				fmt.Printf("  [local] %s@%s -> %s\n", pkg.Name, pkg.Version, pkg.Path)
+				cmd.Printf("  [local] %s@%s -> %s\n", pkg.Name, pkg.Version, pkg.Path)
 				continue
 			}
 
 			if !sourceFallback {
-				fmt.Printf("  [skip] %s@%s (source fallback disabled)\n", pkg.Name, pkg.Version)
+				cmd.Printf("  [skip] %s@%s (source fallback disabled)\n", pkg.Name, pkg.Version)
 				continue
 			}
 
@@ -224,8 +224,8 @@ var fetchCmd = &cobra.Command{
 			result, err := installFromRepository(pkg.Name, pkg.Version, repositoryInstallOptions{
 				Context:   ctx,
 				BuildType: buildType,
-				Stdout:    os.Stdout,
-				Stderr:    os.Stderr,
+				Stdout:    cmd.OutOrStdout(),
+				Stderr:    cmd.ErrOrStderr(),
 			})
 			if err != nil {
 				return fmt.Errorf("source fallback for %s@%s: %w", pkg.Name, pkg.Version, err)
@@ -241,9 +241,9 @@ var fetchCmd = &cobra.Command{
 				lockDirty = true
 			}
 			if result.Cached {
-				fmt.Printf("  [cached-source] %s@%s (%s, %s)\n", pkg.Name, result.Version, result.ABITag, result.BuildType)
+				cmd.Printf("  [cached-source] %s@%s (%s, %s)\n", pkg.Name, result.Version, result.ABITag, result.BuildType)
 			} else {
-				fmt.Printf("  [built] %s@%s (%s) -> %s\n", pkg.Name, result.Version, result.BuildType, result.InstallDir)
+				cmd.Printf("  [built] %s@%s (%s) -> %s\n", pkg.Name, result.Version, result.BuildType, result.InstallDir)
 			}
 		}
 
@@ -262,25 +262,25 @@ var fetchCmd = &cobra.Command{
 		for _, pkg := range lf.Packages {
 			src, ok := depPaths[pkg.Name]
 			if !ok {
-				fmt.Printf("  [warn] no dependency path available for %s@%s\n", pkg.Name, pkg.Version)
+				cmd.Printf("  [warn] no dependency path available for %s@%s\n", pkg.Name, pkg.Version)
 				continue
 			}
 			if _, err := os.Stat(src); err != nil {
-				fmt.Printf("  [warn] skip %s@%s: %v\n", pkg.Name, pkg.Version, err)
+				cmd.Printf("  [warn] skip %s@%s: %v\n", pkg.Name, pkg.Version, err)
 				continue
 			}
 
 			dst := filepath.Join(depsDir, pkg.Name)
 			_ = os.Remove(dst)
 			if err := os.Symlink(src, dst); err != nil {
-				fmt.Printf("  [warn] symlink %s: %v\n", pkg.Name, err)
+				cmd.Printf("  [warn] symlink %s: %v\n", pkg.Name, err)
 				continue
 			}
 			prefixPaths = append(prefixPaths, dst)
 		}
 
 		if len(prefixPaths) > 0 {
-			fmt.Printf("\n  CMAKE_PREFIX_PATH=%s\n", strings.Join(prefixPaths, string(filepath.ListSeparator)))
+			cmd.Printf("\n  CMAKE_PREFIX_PATH=%s\n", strings.Join(prefixPaths, string(filepath.ListSeparator)))
 		}
 
 		return nil
