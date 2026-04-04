@@ -1,14 +1,30 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/all3n/cstow/internal/config"
+	"github.com/all3n/cstow/internal/registry"
+	"github.com/all3n/cstow/internal/repository"
 	"github.com/all3n/cstow/internal/resolver"
 	"github.com/spf13/cobra"
 )
+
+type addRegistryValidator interface {
+	GetManifest(ctx context.Context, pkg, version string) (*registry.Manifest, error)
+	ListVersions(ctx context.Context, pkg string) ([]string, error)
+}
+
+var addNewRegistryValidator = func(ctx context.Context, reg config.Registry) (addRegistryValidator, error) {
+	return registry.NewS3Client(ctx, reg)
+}
+
+var addNewRepoFinder = func() (*repository.Finder, error) {
+	return repository.NewFinder()
+}
 
 var addCmd = &cobra.Command{
 	Use:   "add <package>[@<version>]",
@@ -35,6 +51,11 @@ var addCmd = &cobra.Command{
 			if err := validateBuildType(buildType); err != nil {
 				return err
 			}
+		}
+
+		// Validate dependency before writing
+		if err := validateDependency(name, version, source); err != nil {
+			return err
 		}
 
 		resolver.AddDependency(cfg, name, version, source, buildType)
@@ -69,6 +90,70 @@ func parsePackageSpec(spec string) (name, version string) {
 		version = "*"
 	}
 	return
+}
+
+func validateDependency(name, version, source string) error {
+	ctx := context.Background()
+
+	if source == "registry" {
+		return validateRegistryDependency(ctx, name, version)
+	}
+	return validateRepoDependency(name, version)
+}
+
+func validateRegistryDependency(ctx context.Context, name, version string) error {
+	globalCfg, err := config.LoadGlobal()
+	if err != nil {
+		return fmt.Errorf("load global config: %w", err)
+	}
+
+	// Load project config to get project-level registries
+	cfg, err := config.Load("cstow.toml")
+	if err != nil {
+		return fmt.Errorf("load project config: %w", err)
+	}
+
+	reg, err := config.ResolvePrimaryRegistry(cfg.Registries, globalCfg)
+	if err != nil {
+		return fmt.Errorf("no registry configured: %w", err)
+	}
+
+	client, err := addNewRegistryValidator(ctx, reg)
+	if err != nil {
+		return fmt.Errorf("connect to registry: %w", err)
+	}
+
+	// For specific versions, check manifest directly
+	if version != "*" && version != "" {
+		_, err := client.GetManifest(ctx, name, version)
+		if err != nil {
+			return fmt.Errorf("package %s@%s not found in registry: %w", name, version, err)
+		}
+		return nil
+	}
+
+	// For wildcard, just check that the package exists
+	versions, err := client.ListVersions(ctx, name)
+	if err != nil {
+		return fmt.Errorf("package %q not found in registry: %w", name, err)
+	}
+	if len(versions) == 0 {
+		return fmt.Errorf("package %q has no versions in registry", name)
+	}
+	return nil
+}
+
+func validateRepoDependency(name, version string) error {
+	finder, err := addNewRepoFinder()
+	if err != nil {
+		return fmt.Errorf("load repository config: %w", err)
+	}
+
+	_, err = finder.Find(name, version)
+	if err != nil {
+		return fmt.Errorf("package %q not found in repository: %w", name, err)
+	}
+	return nil
 }
 
 func init() {
