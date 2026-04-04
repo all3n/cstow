@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -76,6 +77,24 @@ func (r *sharedFakeRegistry) Download(_ context.Context, pkg, version, abiTag, b
 		return append([]byte(nil), data...), nil
 	}
 	return nil, os.ErrNotExist
+}
+
+func (r *sharedFakeRegistry) ListVersions(_ context.Context, pkg string) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var versions []string
+	seen := make(map[string]bool)
+	for key := range r.manifests {
+		parts := strings.SplitN(key, "@", 2)
+		if len(parts) == 2 && parts[0] == pkg && !seen[parts[1]] {
+			versions = append(versions, parts[1])
+			seen[parts[1]] = true
+		}
+	}
+	if len(versions) == 0 {
+		return nil, os.ErrNotExist
+	}
+	return versions, nil
 }
 
 // TestPublishFetchGoogletestStaticSharedRoundTrip verifies:
