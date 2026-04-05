@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/BurntSushi/toml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -237,4 +238,64 @@ func TestResolvePrimaryRegistry_PrefersProjectFieldsOverGlobal(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "https://project.example.com", reg.EndpointURL)
 	assert.Equal(t, "project", reg.Profile)
+}
+
+func TestDependencyGitCMakeRoundTrip(t *testing.T) {
+	original := Config{
+		Package: Package{Name: "demo", Version: "0.1.0"},
+		Dependencies: []Dependency{
+			{
+				Name:      "fmt",
+				Version:   "10.2.1",
+				Source:    "git",
+				BuildType: "static",
+				Git:       "https://github.com/fmtlib/fmt.git",
+				Rev:       "10.2.1",
+				CMake: GitCMake{
+					Defines:   []string{"BUILD_SHARED_LIBS=OFF"},
+					CXXFlags:  []string{"-fPIC", "-Wall"},
+					LinkFlags: []string{},
+				},
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	path := dir + "/cstow.toml"
+	require.NoError(t, original.Save(path))
+
+	loaded, err := Load(path)
+	require.NoError(t, err)
+	require.Len(t, loaded.Dependencies, 1)
+	dep := loaded.Dependencies[0]
+	assert.Equal(t, "git", dep.Source)
+	assert.Equal(t, "https://github.com/fmtlib/fmt.git", dep.Git)
+	assert.Equal(t, "10.2.1", dep.Rev)
+	assert.Equal(t, []string{"BUILD_SHARED_LIBS=OFF"}, dep.CMake.Defines)
+	assert.Equal(t, []string{"-fPIC", "-Wall"}, dep.CMake.CXXFlags)
+}
+
+func TestDependencyIsGit(t *testing.T) {
+	assert.True(t, Dependency{Source: "git"}.IsGit())
+	assert.False(t, Dependency{Source: "registry"}.IsGit())
+	assert.False(t, Dependency{Source: "local"}.IsGit())
+}
+
+func TestDependencyGitMinimal(t *testing.T) {
+	tomlStr := `
+[[dependencies]]
+name = "mylib"
+version = "1.0.0"
+source = "git"
+git = "https://github.com/user/mylib.git"
+rev = "v1.0.0"
+`
+	var cfg Config
+	require.NoError(t, toml.Unmarshal([]byte(tomlStr), &cfg))
+	require.Len(t, cfg.Dependencies, 1)
+	dep := cfg.Dependencies[0]
+	assert.Equal(t, "git", dep.Source)
+	assert.Equal(t, "https://github.com/user/mylib.git", dep.Git)
+	assert.Equal(t, "v1.0.0", dep.Rev)
+	assert.Nil(t, dep.CMake.Defines)
 }

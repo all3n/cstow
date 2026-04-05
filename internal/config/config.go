@@ -47,19 +47,31 @@ type Profile struct {
 	LTO      bool   `toml:"lto"`
 }
 
+type GitCMake struct {
+	Defines   []string `toml:"defines,omitempty"`
+	CXXFlags  []string `toml:"cxx_flags,omitempty"`
+	LinkFlags []string `toml:"link_flags,omitempty"`
+}
+
 type Dependency struct {
-	Name      string `toml:"name"`
-	Version   string `toml:"version"`
-	Source    string `toml:"source"`
-	BuildType string `toml:"build_type"`
-	Path      string `toml:"path"`
-	Git       string `toml:"git"`
-	Rev       string `toml:"rev"`
+	Name      string   `toml:"name"`
+	Version   string   `toml:"version"`
+	Source    string   `toml:"source"`
+	BuildType string   `toml:"build_type"`
+	Path      string   `toml:"path"`
+	Git       string   `toml:"git"`
+	Rev       string   `toml:"rev"`
+	CMake     GitCMake `toml:"cmake,omitempty"`
 }
 
 // IsLocal returns true if this dependency uses a local source path.
 func (d Dependency) IsLocal() bool {
 	return d.Source == "local"
+}
+
+// IsGit returns true if this dependency uses a git source.
+func (d Dependency) IsGit() bool {
+	return d.Source == "git"
 }
 
 type Registry struct {
