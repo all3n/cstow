@@ -85,22 +85,42 @@ func ValidateInstall(opts Options) error {
 	var missing []string
 
 	// Check libraries (supports glob patterns like "lib/libfoo*.a")
+	// In debug profile, CMake often appends "d" suffix (e.g. libprotobufd.a).
+	// For shared builds, also search .so/.dylib variants when .a is declared.
 	for _, lib := range opts.Config.Libs {
 		found := false
-		searchPaths := []string{
-			filepath.Join(opts.InstallDir, "lib", lib),
-			filepath.Join(opts.InstallDir, "bin", lib),
-			filepath.Join(opts.InstallDir, lib),
+		candidates := []string{lib}
+		if opts.Profile == "debug" {
+			candidates = append(candidates, debugLibName(lib))
 		}
-		for _, p := range searchPaths {
-			if hasGlob(p) {
-				matches, _ := filepath.Glob(p)
-				if len(matches) > 0 {
+		if opts.Config.BuildType == "shared" {
+			candidates = append(candidates, sharedLibNames(lib)...)
+			// debug + shared: also try debug name → shared
+			if opts.Profile == "debug" {
+				for _, d := range sharedLibNames(debugLibName(lib)) {
+					candidates = append(candidates, d)
+				}
+			}
+		}
+		for _, c := range candidates {
+			searchPaths := []string{
+				filepath.Join(opts.InstallDir, "lib", c),
+				filepath.Join(opts.InstallDir, "bin", c),
+				filepath.Join(opts.InstallDir, c),
+			}
+			for _, p := range searchPaths {
+				if hasGlob(p) {
+					matches, _ := filepath.Glob(p)
+					if len(matches) > 0 {
+						found = true
+						break
+					}
+				} else if _, err := os.Stat(p); err == nil {
 					found = true
 					break
 				}
-			} else if _, err := os.Stat(p); err == nil {
-				found = true
+			}
+			if found {
 				break
 			}
 		}
@@ -243,4 +263,35 @@ func GuessJobs() int {
 // hasGlob reports whether a path contains glob metacharacters.
 func hasGlob(path string) bool {
 	return strings.ContainsAny(path, "*?[")
+}
+
+// debugLibName converts a library name to its debug variant.
+// e.g. "libprotobuf.a" → "libprotobufd.a", "libfoo.so" → "libfood.so"
+func debugLibName(lib string) string {
+	ext := filepath.Ext(lib)
+	if ext == "" {
+		return lib + "d"
+	}
+	name := strings.TrimSuffix(lib, ext)
+	return name + "d" + ext
+}
+
+// sharedLibNames converts a static lib name to shared library name candidates.
+// e.g. "libprotobuf.a" → ["libprotobuf.so", "libprotobuf.so.*", "libprotobuf.dylib"]
+// Supports glob patterns by replacing .a with .so* etc.
+func sharedLibNames(lib string) []string {
+	ext := filepath.Ext(lib)
+	if ext != ".a" && ext != ".lib" {
+		return nil
+	}
+	name := strings.TrimSuffix(lib, ext)
+	switch runtime.GOOS {
+	case "darwin":
+		return []string{name + ".dylib"}
+	case "windows":
+		return []string{strings.TrimPrefix(name, "lib") + ".dll"}
+	default:
+		// Linux/BSD: libfoo.so, libfoo.so.*
+		return []string{name + ".so", name + ".so.*"}
+	}
 }

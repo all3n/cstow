@@ -24,11 +24,12 @@ type repositoryInstallContext struct {
 }
 
 type repositoryInstallOptions struct {
-	Context   *repositoryInstallContext
-	BuildType string
-	Force     bool
-	Stdout    io.Writer
-	Stderr    io.Writer
+	Context     *repositoryInstallContext
+	BuildType   string
+	Force       bool
+	ForceShared bool // parent is shared, force all transitive deps to shared
+	Stdout      io.Writer
+	Stderr      io.Writer
 }
 
 type repositoryInstallResult struct {
@@ -54,6 +55,25 @@ type gitSourceResult struct {
 	ABITag     string
 	BuildType  string
 	Cached     bool
+}
+
+// findProjectRoot walks up from cwd to find the directory containing
+// cstow.toml or .git, returning "" if none found.
+func findProjectRoot() string {
+	dir, _ := os.Getwd()
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "cstow.toml")); err == nil {
+			return dir
+		}
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
 
 func newRepositoryInstallContext(projectCfg *config.Config, profile, toolchainName string) (*repositoryInstallContext, error) {
@@ -119,7 +139,7 @@ func installFromRepository(name, versionConstraint string, opts repositoryInstal
 		opts.Stderr = os.Stderr
 	}
 
-	finder := repository.NewFinderWithPaths(opts.Context.Global.RepositoryPaths())
+	finder := repository.NewFinderWithPaths(opts.Context.Global.RepositoryPaths(findProjectRoot()))
 	pkg, err := finder.Find(name, versionConstraint)
 	if err != nil {
 		return nil, err
@@ -198,8 +218,15 @@ func installFromRepository(name, versionConstraint string, opts repositoryInstal
 			if depBuildType == "" {
 				depBuildType = "static"
 			}
+			// When the parent is shared, force dependencies to shared too
+			// so they are built with -fPIC and can be linked into a shared library.
+			// This propagates transitively through the ForceShared field.
+			if merged.BuildType == "shared" || opts.ForceShared {
+				depBuildType = "shared"
+			}
 			depOpts := opts
 			depOpts.BuildType = depBuildType
+			depOpts.ForceShared = merged.BuildType == "shared"
 			depOpts.Force = false // default cache-first for dependencies
 			depResult, err := installFromRepository(dep.Name, dep.Version, depOpts)
 			if err != nil {
@@ -372,13 +399,16 @@ func candidateABITags(lockTag, detectedTag string) []string {
 
 func findCachedPackage(cache resolver.LocalCache, name, version string, abiTags []string, buildType string) (string, string, bool) {
 	for _, abiTag := range abiTags {
-		if !cache.Has(name, version, abiTag, buildType) {
+		// When buildType is specified, only match exact build-type paths.
+		// Do NOT fall back to legacy (buildType-less) paths.
+		if buildType != "" {
+			p := cache.Path(name, version, abiTag, buildType)
+			if _, err := os.Stat(p); err == nil {
+				return p, abiTag, true
+			}
 			continue
 		}
-		newPath := cache.Path(name, version, abiTag, buildType)
-		if _, err := os.Stat(newPath); err == nil {
-			return newPath, abiTag, true
-		}
+		// No buildType specified: try legacy path first, then typed path.
 		legacyPath := cache.LegacyPath(name, version, abiTag)
 		if _, err := os.Stat(legacyPath); err == nil {
 			return legacyPath, abiTag, true

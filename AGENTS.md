@@ -13,10 +13,11 @@
 
 `cstow` is a Go CLI for C++ package and build workflows. Module: `github.com/all3n/cstow`, Go 1.25+.
 
-Two coexisting flows (not yet fully unified):
+Three coexisting flows:
 
 - **Registry flow**: prebuilt artifacts published to / fetched from S3-compatible storage.
 - **Repository flow**: package build recipes in repository directories, used by `cstow install` to build from source.
+- **Git flow**: direct Git repository dependencies with CMake build options, declared in `cstow.toml`.
 
 Do not mark a feature as "done" unless it is wired through the CLI and covered by tests.
 
@@ -39,10 +40,10 @@ Use targeted package tests while iterating (`go test ./internal/registry/...`), 
 ## Code Map
 
 - `cmd/`
-  - Commands: `init`, `build`, `add`, `fetch`, `publish`, `install`, `migrate`, `ci`, `workspace list`, `workspace build`, `check-abi`, `artifact list`, `artifact sync`, `artifact show`
-  - `fetch.go` — downloads prebuilt artifacts, uses manifest metadata for ABI/build_type matching, falls back to source builds, and indexes outcomes in artifact DB.
-  - `deps.go` — builds repository packages from source and indexes both fresh installs and cache hits in artifact DB.
-  - `artifact.go` — exposes artifact list and sync commands; SQLite is a query index over the cache.
+  - Commands: `init`, `build`, `add`, `fetch`, `publish`, `install`, `migrate`, `ci`, `workspace`, `check-abi`, `artifact`
+  - `fetch.go` — downloads prebuilt artifacts, uses manifest metadata for ABI/build_type matching, falls back to source builds (git or repository), and indexes outcomes in artifact DB.
+  - `deps.go` — builds repository packages and git sources from source, and indexes results in artifact DB.
+  - `artifact.go` — exposes artifact list/sync/show commands; SQLite is a query index over the cache.
 - `internal/config/`
   - Project config (`cstow.toml`) and user config (`~/.cstow/config.toml`)
 - `internal/project/`
@@ -58,11 +59,11 @@ Use targeted package tests while iterating (`go test ./internal/registry/...`), 
 - `internal/artifactdb/`
   - Local SQLite artifact index (`~/.cstow/cstow.db`): store, upsert, list, sync, hash_id lookup
 - `internal/repository/`
-  - Repository package definitions, version lookup, layered build config merge, source fetch
+  - Repository package definitions, version lookup, layered build config merge, source fetch (git/archive)
 - `internal/builder/`
-  - Source build/install execution for repository packages (CMake: static/shared/header-only)
+  - Source build/install execution (CMake: static/shared/header-only), patch application
 - `internal/workspace/`
-  - Workspace root discovery and member expansion
+  - Workspace root discovery and member expansion, topological sort
 - `internal/hooks/`
   - Shell hook runner for lifecycle scripts
 - `internal/legacy/`
@@ -73,30 +74,32 @@ Use targeted package tests while iterating (`go test ./internal/registry/...`), 
 ## Key Data Flow
 
 ```
-add      → resolver → cstow.toml + cstow.lock
+add      → resolver → cstow.toml + cstow.lock (registry/git/local/repository)
 fetch    → registry (S3) → cache → cstow_deps/
          → artifactdb (SQLite) index
+         → git source → builder → cache → cstow_deps/
          → fallback: repository recipe → builder → cache → cstow_deps/
          → --artifact <hash>: fetchByHashID direct lookup
 install  → repository recipe → builder (CMake) → cache → cstow_deps/
+         → git source → builder → cache → cstow_deps/
 build    → CMake + cstow_deps/ → project build
 publish  → pack → registry (S3) + artifactdb index
 ```
 
 ## Current Status
 
-Follow the code as it exists today, not design docs. Key gaps to know about:
+Follow the code as it exists today, not design docs. Key capabilities:
 
-- `add` does not validate dependencies against repository or registry yet.
-- `build` does not consume repository recipes; relies on `cstow_deps` and raw CMake.
-- `fetch` supports manifest-based ABI/build_type matching, hash-based direct fetch (`--artifact`), and source-build fallback (`--source-fallback`).
-- `install` merges repository config but does not recursively build recipe dependencies.
-- `publish` supports both project-directory and direct local-artifact publish by `(name, version, abi_tag, build_type)`; populates `hash_id` and `build_tags` metadata.
-- Fetch and publish use **decoupled registry client interfaces** (`fetchRegistryClient` / `publishRegistryClient`).
-- `internal/repository/source.go` supports `git` sources; `archive` is a stub.
-- `internal/builder/` supports CMake only (no make/autoconf/meson/custom).
-- Dependency `build_type` flows through `cstow.toml`, `cstow.lock`, cache paths, and registry artifact keys; backward-compatible with legacy `<abi>` directories.
-- Version-specific patches are merged into config but not applied during source builds.
+- `add` supports `--source registry|git|local|repository`. Git source supports `--git-url`, `--tag`, and `--cmake-define`.
+- `build` supports `--fetch` for automatic dependency补全.
+- `fetch` supports manifest-based ABI/build_type matching, hash-based direct fetch (`--artifact`), and source-build fallback (git/archive/repository).
+- `install` supports git sources and repository recipes with recursive dependency resolution.
+- `publish` populates `hash_id` and `build_tags` metadata in manifests.
+- `internal/repository/source.go` supports both `git` and `archive` (.tar.gz, .zip) sources.
+- `internal/builder/` supports CMake only, handles patch application before build.
+- Workspace supports topological build order and parallel building (`--jobs`).
+- Local artifact DB (`~/.cstow/cstow.db`) indexes all successful builds and fetches.
+
 
 ## Key Command Flags
 

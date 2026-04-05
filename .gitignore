@@ -5,3 +5,4 @@ env.local.sh
 .claude/ralph-loop.local.md
 /tmp
 cstow.lock
+packages/

@@ -49,7 +49,21 @@ func TestFindCachedPackage(t *testing.T) {
 	assert.Equal(t, "clang17-cxx20-linux-x86_64", abiTag)
 }
 
-func TestFindCachedPackageFallsBackToLegacyPath(t *testing.T) {
+func TestFindCachedPackageIgnoresLegacyPathWhenBuildTypeSpecified(t *testing.T) {
+	cacheRoot := t.TempDir()
+	cache := &resolver.FSCache{Root: cacheRoot}
+
+	// Legacy path exists (no build type), but we're looking for shared.
+	legacy := cache.LegacyPath("fmt", "10.2.1", "clang17-cxx20-linux-x86_64")
+	require.NoError(t, os.MkdirAll(legacy, 0o755))
+
+	_, _, ok := findCachedPackage(cache, "fmt", "10.2.1", []string{
+		"clang17-cxx20-linux-x86_64",
+	}, "shared")
+	assert.False(t, ok, "should not match legacy path when buildType is specified")
+}
+
+func TestFindCachedPackageMatchesLegacyPathWhenNoBuildType(t *testing.T) {
 	cacheRoot := t.TempDir()
 	cache := &resolver.FSCache{Root: cacheRoot}
 
@@ -58,7 +72,7 @@ func TestFindCachedPackageFallsBackToLegacyPath(t *testing.T) {
 
 	resolvedPath, abiTag, ok := findCachedPackage(cache, "fmt", "10.2.1", []string{
 		"clang17-cxx20-linux-x86_64",
-	}, "shared")
+	}, "")
 	require.True(t, ok)
 	assert.Equal(t, legacy, resolvedPath)
 	assert.Equal(t, "clang17-cxx20-linux-x86_64", abiTag)

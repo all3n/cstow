@@ -306,8 +306,21 @@ func mergeRegistry(primary, fallback Registry) Registry {
 // RepositoryPaths returns ordered directory paths for Finder, expanding ~ and
 // sorting by Priority (lower = higher priority). The built-in
 // ~/.cstow/repository/ is always appended last as a fallback.
-func (g *Global) RepositoryPaths() []string {
+// If projectRoot is non-empty and <projectRoot>/.cstow/repository/ exists,
+// it is prepended with the highest priority.
+func (g *Global) RepositoryPaths(projectRoot ...string) []string {
 	home, _ := os.UserHomeDir()
+
+	// Pre-allocate with room for project-level + global repos + fallback
+	paths := make([]string, 0, len(g.Repositories)+2)
+
+	// Project-level repository (highest priority)
+	if len(projectRoot) > 0 && projectRoot[0] != "" {
+		pkgRepo := filepath.Join(projectRoot[0], ".cstow", "repository")
+		if fi, err := os.Stat(pkgRepo); err == nil && fi.IsDir() {
+			paths = append(paths, pkgRepo)
+		}
+	}
 
 	sorted := make([]RepoSource, len(g.Repositories))
 	copy(sorted, g.Repositories)
@@ -328,7 +341,6 @@ func (g *Global) RepositoryPaths() []string {
 		}
 	}
 
-	paths := make([]string, 0, len(sorted)+1)
 	for _, r := range sorted {
 		if r.Path != "" {
 			p := r.Path

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"unicode"
 
 	"github.com/BurntSushi/toml"
@@ -19,12 +20,14 @@ type Finder struct {
 
 // NewFinder loads ~/.cstow/config.toml and builds search paths from it.
 // Falls back to ~/.cstow/repository/ if config is missing.
-func NewFinder() (*Finder, error) {
+// If projectRoot is non-empty, includes <projectRoot>/.cstow/repository/
+// with highest priority.
+func NewFinder(projectRoot ...string) (*Finder, error) {
 	g, err := config.LoadGlobal()
 	if err != nil {
 		return nil, fmt.Errorf("load global config: %w", err)
 	}
-	return &Finder{searchPaths: g.RepositoryPaths()}, nil
+	return &Finder{searchPaths: g.RepositoryPaths(projectRoot...)}, nil
 }
 
 // NewFinderWithPaths returns a Finder with explicit search paths (used in tests).
@@ -75,6 +78,69 @@ func (f *Finder) Find(name, versionConstraint string) (*ResolvedPkg, error) {
 	}
 
 	return nil, fmt.Errorf("package %q not found in any repository (constraint: %s)", name, versionConstraint)
+}
+
+// SearchResult is one matched package from a Search call.
+type SearchResult struct {
+	Name        string
+	Description string
+	Version     string // latest version
+	RepoPath    string // which repository root matched
+}
+
+// Search scans all repository paths for packages whose name contains query.
+// Pass "" to list all packages. Results are deduplicated by name (first match wins).
+func (f *Finder) Search(query string) ([]SearchResult, error) {
+	seen := map[string]bool{}
+	var results []SearchResult
+
+	for _, root := range f.searchPaths {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, letter := range entries {
+			if !letter.IsDir() {
+				continue
+			}
+			pkgs, err := os.ReadDir(filepath.Join(root, letter.Name()))
+			if err != nil {
+				continue
+			}
+			for _, pkg := range pkgs {
+				if !pkg.IsDir() {
+					continue
+				}
+				name := pkg.Name()
+				if query != "" && !strings.Contains(strings.ToLower(name), strings.ToLower(query)) {
+					continue
+				}
+				if seen[name] {
+					continue
+				}
+				seen[name] = true
+
+				pkgFile := filepath.Join(root, letter.Name(), name, "package.toml")
+				def, err := loadPackageDef(pkgFile)
+				if err != nil {
+					continue
+				}
+
+				latest := ""
+				if len(def.Versions) > 0 {
+					latest, _ = pickBestVersion(def.Versions, "*")
+				}
+				results = append(results, SearchResult{
+					Name:        name,
+					Description: def.Package.Description,
+					Version:     latest,
+					RepoPath:    root,
+				})
+			}
+		}
+	}
+
+	return results, nil
 }
 
 // indexLetter returns the first-letter directory name for a package.

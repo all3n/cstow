@@ -23,7 +23,7 @@ var addNewRegistryValidator = func(ctx context.Context, reg config.Registry) (ad
 }
 
 var addNewRepoFinder = func() (*repository.Finder, error) {
-	return repository.NewFinder()
+	return repository.NewFinder(findProjectRoot())
 }
 
 var addCmd = &cobra.Command{
