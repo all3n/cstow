@@ -299,3 +299,48 @@ rev = "v1.0.0"
 	assert.Equal(t, "v1.0.0", dep.Rev)
 	assert.Nil(t, dep.CMake.Defines)
 }
+
+func TestGlobal_RepoPathByName(t *testing.T) {
+	orig := os.Getenv("HOME")
+	t.Cleanup(func() { os.Setenv("HOME", orig) })
+
+	tmp := t.TempDir()
+	os.Setenv("HOME", tmp)
+
+	g := &Global{
+		Repositories: []RepoSource{
+			{Name: "local", Path: "/tmp/repo"},
+			{Name: "work", Path: "~/projects/pkgs"},
+		},
+	}
+
+	// Case 1: Existing repo by name
+	path, ok := g.RepoPathByName("local")
+	assert.True(t, ok)
+	assert.Equal(t, "/tmp/repo", path)
+
+	// Case 2: Repo with ~ expansion
+	path, ok = g.RepoPathByName("work")
+	assert.True(t, ok)
+	assert.Equal(t, filepath.Join(tmp, "projects/pkgs"), path)
+
+	// Case 3: Built-in "home" repo
+	path, ok = g.RepoPathByName("home")
+	assert.True(t, ok)
+	assert.Equal(t, filepath.Join(tmp, ".cstow", "repository"), path)
+
+	// Case 4: Built-in "default" repo
+	path, ok = g.RepoPathByName("default")
+	assert.True(t, ok)
+	assert.Equal(t, filepath.Join(tmp, ".cstow", "repository"), path)
+
+	// Case 5: Missing repo
+	_, ok = g.RepoPathByName("missing")
+	assert.False(t, ok)
+}
+
+func TestDefaultRepoPath(t *testing.T) {
+	cwd, _ := os.Getwd()
+	expected := filepath.Join(cwd, ".cstow", "repository")
+	assert.Equal(t, expected, DefaultRepoPath())
+}

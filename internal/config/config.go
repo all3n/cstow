@@ -354,3 +354,28 @@ func (g *Global) RepositoryPaths(projectRoot ...string) []string {
 	paths = append(paths, filepath.Join(home, ".cstow", "repository"))
 	return paths
 }
+
+// RepoPathByName returns the expanded path of a repository named 'name' in global config.
+func (g *Global) RepoPathByName(name string) (string, bool) {
+	home, _ := os.UserHomeDir()
+	for _, r := range g.Repositories {
+		if r.Name == name {
+			p := r.Path
+			if len(p) >= 2 && p[:2] == "~/" {
+				p = filepath.Join(home, p[2:])
+			}
+			return p, true
+		}
+	}
+	// Also check built-in "home" repo if name matches
+	if name == "home" || name == "default" {
+		return filepath.Join(home, ".cstow", "repository"), true
+	}
+	return "", false
+}
+
+// DefaultRepoPath returns the path to the current project's .cstow/repository.
+func DefaultRepoPath() string {
+	cwd, _ := os.Getwd()
+	return filepath.Join(cwd, ".cstow", "repository")
+}
