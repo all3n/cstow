@@ -46,9 +46,11 @@ func Build(opts Options) (*Result, error) {
 		opts.Jobs = runtime.NumCPU()
 	}
 
-	switch opts.Config.System {
-	case "header-only":
+	if opts.Config.System == "header-only" || opts.Config.BuildType == "header-only" {
 		return installHeaderOnly(opts)
+	}
+
+	switch opts.Config.System {
 	case "automake":
 		return buildAutomake(opts)
 	case "cmake", "": // default to cmake
