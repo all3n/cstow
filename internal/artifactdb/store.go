@@ -61,8 +61,154 @@ func Open(path string) (*Store, error) {
 	return store, nil
 }
 
+type PruneStats struct {
+	RecordsDeleted int
+	BytesFreed     int64
+}
+
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+func (s *Store) Delete(name, version, abiTag, buildType string) error {
+	_, err := s.db.Exec(`
+DELETE FROM artifacts
+WHERE name = ? AND version = ? AND abi_tag = ? AND build_type = ?`,
+		name, version, abiTag, buildType,
+	)
+	if err != nil {
+		return fmt.Errorf("delete artifact %s@%s: %w", name, version, err)
+	}
+	return nil
+}
+
+func (s *Store) Touch(name, version, abiTag, buildType string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.Exec(`
+UPDATE artifacts
+SET last_seen_at = ?
+WHERE name = ? AND version = ? AND abi_tag = ? AND build_type = ?`,
+		now, name, version, abiTag, buildType,
+	)
+	if err != nil {
+		return fmt.Errorf("touch artifact %s@%s: %w", name, version, err)
+	}
+	return nil
+}
+
+func (s *Store) Prune(retentionDays int, maxSizeGB int, dryRun bool) (PruneStats, error) {
+	maxBytes := int64(maxSizeGB) * 1024 * 1024 * 1024
+	return s.PruneWithLimits(retentionDays, maxBytes, dryRun)
+}
+
+func (s *Store) PruneWithLimits(retentionDays int, maxBytes int64, dryRun bool) (PruneStats, error) {
+	var stats PruneStats
+
+	type toDelete struct {
+		name, version, abiTag, buildType, installDir string
+	}
+
+	// 1. Retention Days Pruning
+	if retentionDays > 0 {
+		threshold := time.Now().AddDate(0, 0, -retentionDays).UTC()
+		rows, err := s.db.Query(`
+SELECT name, version, abi_tag, build_type, install_dir
+FROM artifacts
+WHERE last_seen_at < ?`,
+			threshold.Format(time.RFC3339),
+		)
+		if err != nil {
+			return stats, fmt.Errorf("query old artifacts: %w", err)
+		}
+
+		var items []toDelete
+		for rows.Next() {
+			var d toDelete
+			if err := rows.Scan(&d.name, &d.version, &d.abiTag, &d.buildType, &d.installDir); err != nil {
+				rows.Close()
+				return stats, fmt.Errorf("scan old artifact: %w", err)
+			}
+			items = append(items, d)
+		}
+		rows.Close()
+
+		for _, d := range items {
+			size, _ := dirSize(d.installDir)
+			stats.RecordsDeleted++
+			stats.BytesFreed += size
+
+			if !dryRun {
+				_ = os.RemoveAll(d.installDir)
+				if err := s.Delete(d.name, d.version, d.abiTag, d.buildType); err != nil {
+					return stats, err
+				}
+			}
+		}
+	}
+
+	// 2. Max Size Pruning
+	if maxBytes > 0 {
+		// Get all records sorted by last_seen_at (oldest first)
+		rows, err := s.db.Query(`
+SELECT name, version, abi_tag, build_type, install_dir
+FROM artifacts
+ORDER BY last_seen_at ASC`)
+		if err != nil {
+			return stats, fmt.Errorf("query all artifacts for size pruning: %w", err)
+		}
+
+		type entry struct {
+			name, version, abiTag, buildType, installDir string
+			size                                       int64
+		}
+		var entries []entry
+		var totalSize int64
+
+		for rows.Next() {
+			var e entry
+			if err := rows.Scan(&e.name, &e.version, &e.abiTag, &e.buildType, &e.installDir); err != nil {
+				rows.Close()
+				return stats, fmt.Errorf("scan artifact for size pruning: %w", err)
+			}
+			e.size, _ = dirSize(e.installDir)
+			entries = append(entries, e)
+			totalSize += e.size
+		}
+		rows.Close()
+
+		for i := 0; i < len(entries) && totalSize > maxBytes; i++ {
+			e := entries[i]
+			stats.RecordsDeleted++
+			stats.BytesFreed += e.size
+			totalSize -= e.size
+
+			if !dryRun {
+				_ = os.RemoveAll(e.installDir)
+				if err := s.Delete(e.name, e.version, e.abiTag, e.buildType); err != nil {
+					return stats, err
+				}
+			}
+		}
+	}
+
+	return stats, nil
+}
+
+func dirSize(path string) (int64, error) {
+	var size int64
+	err := filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			info, err := d.Info()
+			if err == nil {
+				size += info.Size()
+			}
+		}
+		return nil
+	})
+	return size, err
 }
 
 func (s *Store) initSchema() error {

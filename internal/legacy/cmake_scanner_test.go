@@ -106,8 +106,9 @@ add_executable(legacy-app main.cpp)
 }
 
 func TestGenerateCStowToml(t *testing.T) {
-	cfg := GenerateCStowToml("mylib", "1.0.0", ".", []string{"-DBUILD_SHARED=OFF"}, nil)
+	cfg := GenerateCStowToml("mylib", "1.0.0", "c++17", ".", []string{"-DBUILD_SHARED=OFF"}, nil)
 	assert.Equal(t, "mylib", cfg.Package.Name)
+	assert.Equal(t, "c++17", cfg.Package.Std)
 	assert.NotNil(t, cfg.Legacy)
 	assert.Equal(t, "cmake", cfg.Legacy.Type)
 }

@@ -6,6 +6,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/all3n/cstow/internal/artifactdb"
+	"github.com/all3n/cstow/internal/config"
 	"github.com/all3n/cstow/internal/resolver"
 	"github.com/spf13/cobra"
 )
@@ -73,6 +74,47 @@ var artifactSyncCmd = &cobra.Command{
 	},
 }
 
+var artifactPruneCmd = &cobra.Command{
+	Use:   "prune",
+	Short: "Cleanup old or oversized cache artifacts",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		global, err := config.LoadGlobal()
+		if err != nil {
+			return err
+		}
+
+		retentionDays, _ := cmd.Flags().GetInt("retention-days")
+		if retentionDays == 0 {
+			retentionDays = global.Cache.RetentionDays
+		}
+		maxSizeGB, _ := cmd.Flags().GetInt("max-size-gb")
+		if maxSizeGB == 0 {
+			maxSizeGB = global.Cache.MaxSizeGB
+		}
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+
+		store, err := artifactdb.OpenDefault()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+
+		stats, err := store.Prune(retentionDays, maxSizeGB, dryRun)
+		if err != nil {
+			return err
+		}
+
+		if dryRun {
+			fmt.Fprintln(cmd.OutOrStdout(), "Dry run: would have deleted:")
+		} else {
+			fmt.Fprintln(cmd.OutOrStdout(), "Cache pruned successfully:")
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "  Records deleted: %d\n", stats.RecordsDeleted)
+		fmt.Fprintf(cmd.OutOrStdout(), "  Space freed: %.2f MB\n", float64(stats.BytesFreed)/(1024*1024))
+		return nil
+	},
+}
+
 var artifactShowCmd = &cobra.Command{
 	Use:   "show <hashid>",
 	Short: "Show an indexed artifact by hash_id or unique hash prefix",
@@ -104,6 +146,12 @@ var artifactShowCmd = &cobra.Command{
 func init() {
 	artifactCmd.AddCommand(artifactListCmd)
 	artifactCmd.AddCommand(artifactSyncCmd)
+	artifactCmd.AddCommand(artifactPruneCmd)
 	artifactCmd.AddCommand(artifactShowCmd)
 	rootCmd.AddCommand(artifactCmd)
+
+	artifactPruneCmd.Flags().Int("retention-days", 0, "Prune artifacts older than N days")
+	artifactPruneCmd.Flags().Int("max-size-gb", 0, "Prune oldest artifacts until cache size is below N GB")
+	artifactPruneCmd.Flags().Bool("dry-run", false, "Show what would be deleted without actually deleting")
 }
+

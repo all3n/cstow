@@ -93,9 +93,10 @@
 
 - [x] workspace 成员依赖排序 (拓扑排序) (Done)
 - [x] workspace 并行构建 (基于依赖关系的并行调度) (Done: `cstow workspace build --jobs N`)
-- [ ] 优化 workspace 下的共享 lock / cache 逻辑
-- [ ] 完善 `migrate` 生成结果和 `ci` 模板
-- [ ] 补充文档与示例仓库布局
+- [x] 实现 Cache 清理策略 (Prune by age and size) (Done: `cstow artifact prune`)
+- [x] 优化 workspace 下的共享 lock / cache 逻辑 (Done: workspace build 统一 fetch + project-level flock)
+- [x] 完善 `migrate` 生成结果和 `ci` 模板 (Done: migrate 支持 std 检测和 URL，ci 支持 workspace)
+- [x] 补充文档与示例仓库布局 (Done: examples/git-dependency-demo)
 
 ### 完成标准
 

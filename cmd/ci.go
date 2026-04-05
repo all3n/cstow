@@ -5,6 +5,7 @@ import (
 	"os"
 	"text/template"
 
+	"github.com/all3n/cstow/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -63,18 +64,37 @@ jobs:
           key: cstow-${{ matrix.toolchain }}-${{ hashFiles('cstow.lock') }}
 
       - name: Fetch dependencies
-        run: ./cstow fetch
+        run: {{ .FetchCmd }}
         env:
           CSTOW_REGISTRY_KEY: ${{ secrets.CSTOW_REGISTRY_KEY }}
           CSTOW_REGISTRY_SECRET: ${{ secrets.CSTOW_REGISTRY_SECRET }}
 
       - name: Build
-        run: ./cstow build --profile ${{ matrix.profile }} --toolchain ${{ matrix.toolchain }}
+        run: {{ .BuildCmd }}
         env:
           CSTOW_CI: 1
 `
 
 func emitGitHubActions() error {
+	dir, _ := os.Getwd()
+	isWorkspace := false
+	if ws, err := workspace.Load(dir); err == nil && ws.Root == dir {
+		isWorkspace = true
+	}
+
+	data := struct {
+		FetchCmd string
+		BuildCmd string
+	}{
+		FetchCmd: "./cstow fetch",
+		BuildCmd: "./cstow build --profile ${{ matrix.profile }} --toolchain ${{ matrix.toolchain }}",
+	}
+
+	if isWorkspace {
+		data.FetchCmd = "./cstow workspace fetch"
+		data.BuildCmd = "./cstow workspace build --profile ${{ matrix.profile }} --toolchain ${{ matrix.toolchain }} --jobs 4"
+	}
+
 	tmpl, err := template.New("github").Parse(githubActionsTemplate)
 	if err != nil {
 		return fmt.Errorf("parse template: %w", err)
@@ -91,11 +111,11 @@ func emitGitHubActions() error {
 	}
 	defer f.Close()
 
-	if err := tmpl.Execute(f, nil); err != nil {
+	if err := tmpl.Execute(f, data); err != nil {
 		return fmt.Errorf("write workflow: %w", err)
 	}
 
-	fmt.Println(">> generated .github/workflows/cstow.yml")
+	fmt.Printf(">> generated .github/workflows/cstow.yml (workspace: %v)\n", isWorkspace)
 	fmt.Println("   Remember to set CSTOW_REGISTRY_KEY and CSTOW_REGISTRY_SECRET secrets")
 	return nil
 }

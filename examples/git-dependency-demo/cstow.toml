@@ -1,0 +1,17 @@
+[package]
+name = "git-dependency-demo"
+version = "0.1.0"
+std = "c++17"
+
+[build]
+type = "executable"
+sources = ["src/main.cpp"]
+
+[[dependencies]]
+name = "fmt"
+version = "10.2.1"
+source = "git"
+git = "https://github.com/fmtlib/fmt.git"
+rev = "10.2.1"
+[dependencies.cmake]
+defines = ["FMT_TEST=OFF", "FMT_DOC=OFF"]

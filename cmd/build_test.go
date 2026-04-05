@@ -17,7 +17,7 @@ func TestCheckDependenciesReady_NoLockFile(t *testing.T) {
 	require.NoError(t, os.Chdir(dir))
 	t.Cleanup(func() { _ = os.Chdir(oldWD) })
 
-	err = checkDependenciesReady()
+	err = checkDependenciesReady(".")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "cstow.lock not found")
 	assert.Contains(t, err.Error(), "cstow add")
@@ -41,7 +41,7 @@ source = "registry"
 
 	require.NoError(t, os.MkdirAll(filepath.Join("cstow_deps", "fmt"), 0o755))
 
-	err = checkDependenciesReady()
+	err = checkDependenciesReady(".")
 	assert.NoError(t, err)
 }
 
@@ -69,7 +69,7 @@ source = "registry"
 	require.NoError(t, os.MkdirAll(filepath.Join("cstow_deps", "fmt"), 0o755))
 	// spdlog dir intentionally NOT created
 
-	err = checkDependenciesReady()
+	err = checkDependenciesReady(".")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "missing dependencies")
 	assert.Contains(t, err.Error(), "spdlog@1.13.0")
@@ -88,7 +88,7 @@ func TestCheckDependenciesReady_EmptyLock(t *testing.T) {
 version = 1
 `), 0o644))
 
-	err = checkDependenciesReady()
+	err = checkDependenciesReady(".")
 	assert.NoError(t, err)
 }
 

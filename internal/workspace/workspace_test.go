@@ -75,3 +75,64 @@ func TestExpandMembersGlob(t *testing.T) {
 	// Only a and b should be included (c has no cstow.toml)
 	assert.Equal(t, 2, len(members))
 }
+
+func TestAllDependencies(t *testing.T) {
+	root := t.TempDir()
+
+	// Root config with some deps
+	wsCfg := &config.Config{
+		Package: config.Package{Name: "root"},
+		Workspace: &config.Workspace{
+			Members: []string{"a", "b"},
+		},
+		Dependencies: []config.Dependency{
+			{Name: "dep1", Version: "1.0.0"},
+			{Name: "shared", Version: "1.0.0"},
+		},
+	}
+	require.NoError(t, wsCfg.Save(filepath.Join(root, "cstow.toml")))
+
+	// Module A config overriding 'shared'
+	dirA := filepath.Join(root, "a")
+	require.NoError(t, os.MkdirAll(dirA, 0o755))
+	cfgA := &config.Config{
+		Package: config.Package{Name: "a"},
+		Dependencies: []config.Dependency{
+			{Name: "shared", Version: "2.0.0"},
+			{Name: "depA", Version: "0.1.0"},
+		},
+	}
+	require.NoError(t, cfgA.Save(filepath.Join(dirA, "cstow.toml")))
+
+	// Module B config
+	dirB := filepath.Join(root, "b")
+	require.NoError(t, os.MkdirAll(dirB, 0o755))
+	cfgB := &config.Config{
+		Package: config.Package{Name: "b"},
+		Dependencies: []config.Dependency{
+			{Name: "depB", Version: "0.1.0"},
+		},
+	}
+	require.NoError(t, cfgB.Save(filepath.Join(dirB, "cstow.toml")))
+
+	ws, err := Load(root)
+	require.NoError(t, err)
+
+	deps, err := ws.AllDependencies()
+	require.NoError(t, err)
+
+	// dep1 (root), shared (v2.0.0 from A), depA, depB
+	assert.Equal(t, 4, len(deps))
+
+	foundShared := false
+	for _, d := range deps {
+		if d.Name == "shared" {
+			assert.Equal(t, "2.0.0", d.Version)
+			foundShared = true
+		}
+	}
+	assert.True(t, foundShared)
+
+	assert.Equal(t, filepath.Join(root, "cstow.lock"), ws.RootLockPath())
+	assert.Equal(t, filepath.Join(root, "cstow_deps"), ws.RootDepsDir())
+}

@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +16,7 @@ import (
 	"github.com/all3n/cstow/internal/hooks"
 	"github.com/all3n/cstow/internal/resolver"
 	"github.com/all3n/cstow/internal/toolchain"
+	"github.com/all3n/cstow/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -25,163 +29,221 @@ var buildCmd = &cobra.Command{
 		toolchainName, _ := cmd.Flags().GetString("toolchain")
 		autoFetch, _ := cmd.Flags().GetBool("fetch")
 
-		cfgPath := "cstow.toml"
-		if _, err := os.Stat(cfgPath); err != nil {
-			return fmt.Errorf("cstow.toml not found in current directory")
-		}
+		return runBuild(".", profile, toolchainName, autoFetch, cmd.OutOrStdout(), cmd.ErrOrStderr())
+	},
+}
 
-		cfg, err := config.Load(cfgPath)
-		if err != nil {
-			return fmt.Errorf("load config: %w", err)
-		}
+func runBuild(workDir, profile, toolchainName string, autoFetch bool, stdout, stderr io.Writer) error {
+	if workDir == "" {
+		workDir = "."
+	}
+	cfgPath := filepath.Join(workDir, "cstow.toml")
+	if _, err := os.Stat(cfgPath); err != nil {
+		return fmt.Errorf("cstow.toml not found in %s", workDir)
+	}
 
-		// Merge --toolchain flag into config
-		tcCfg := cfg.Toolchain
-		if toolchainName != "" && toolchainName != "auto" {
-			tcCfg.Compiler = toolchainName
-		}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
 
-		tc, err := toolchain.Detect(&tcCfg)
-		if err != nil {
-			return fmt.Errorf("detect toolchain: %w", err)
-		}
+	// Merge --toolchain flag into config
+	tcCfg := cfg.Toolchain
+	if toolchainName != "" && toolchainName != "auto" {
+		tcCfg.Compiler = toolchainName
+	}
 
-		// Detect ABI tag
-		abiTag := abi.DetectFromToolchain(tc.Kind, tc.Version, cfg.Package.Std)
+	tc, err := toolchain.Detect(&tcCfg)
+	if err != nil {
+		return fmt.Errorf("detect toolchain: %w", err)
+	}
 
-		fmt.Printf(">> toolchain: %s %d.%d.%d (%s)\n", tc.Kind, tc.Version[0], tc.Version[1], tc.Version[2], tc.Target)
-		fmt.Printf(">> abi: %s\n", abiTag.String())
+	// Detect ABI tag
+	abiTag := abi.DetectFromToolchain(tc.Kind, tc.Version, cfg.Package.Std)
 
-		// Check that all dependencies from cstow.lock are present
-		if err := checkDependenciesReady(); err != nil {
-			if autoFetch {
-				fmt.Println(">> missing dependencies, fetching...")
-				if err := runFetch(cfg, profile, toolchainName, true, cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
-					return fmt.Errorf("auto-fetch failed: %w", err)
-				}
-				// Re-check after fetch
-				if err := checkDependenciesReady(); err != nil {
-					return err
-				}
-			} else {
+	fmt.Fprintf(stdout, ">> toolchain: %s %d.%d.%d (%s)\n", tc.Kind, tc.Version[0], tc.Version[1], tc.Version[2], tc.Target)
+	fmt.Fprintf(stdout, ">> abi: %s\n", abiTag.String())
+
+	// Check that all dependencies are present
+	if err := checkDependenciesReady(workDir); err != nil {
+		if autoFetch {
+			fmt.Fprintln(stdout, ">> missing dependencies, fetching...")
+			fetchOpts := fetchOptions{
+				WorkDir:        workDir,
+				Profile:        profile,
+				Toolchain:      toolchainName,
+				SourceFallback: true,
+				Stdout:         stdout,
+				Stderr:         stderr,
+			}
+			// If in workspace, use workspace-wide fetch context
+			if ws, err := workspace.Load(workDir); err == nil {
+				fetchOpts.LockPath = ws.RootLockPath()
+				fetchOpts.DepsDir = ws.RootDepsDir()
+			}
+			if err := runFetch(cfg, fetchOpts); err != nil {
+				return fmt.Errorf("auto-fetch failed: %w", err)
+			}
+			// Re-check after fetch
+			if err := checkDependenciesReady(workDir); err != nil {
 				return err
 			}
-		}
-
-		// Run pre-build hook
-		dir, _ := os.Getwd()
-		hr := hooks.New(cfg.Hooks, dir)
-		if err := hr.Run("pre-build"); err != nil {
+		} else {
 			return err
 		}
+	}
 
-		buildDir := filepath.Join("build", profile)
-		if err := os.MkdirAll(buildDir, 0o755); err != nil {
-			return fmt.Errorf("create build dir: %w", err)
+	// Run pre-build hook
+	hr := hooks.New(cfg.Hooks, workDir)
+	if err := hr.Run("pre-build"); err != nil {
+		return err
+	}
+
+	buildDir := filepath.Join(workDir, "build", profile)
+	if err := os.MkdirAll(buildDir, 0o755); err != nil {
+		return fmt.Errorf("create build dir: %w", err)
+	}
+
+	cmakeType := "Debug"
+	if profile == "release" {
+		cmakeType = "Release"
+	}
+
+	// Determine source directory
+	sourceDir := workDir
+	hasCMakeLists := true
+	if _, err := os.Stat(filepath.Join(workDir, "CMakeLists.txt")); err != nil {
+		hasCMakeLists = false
+		if cfg.Legacy != nil && cfg.Legacy.Root != "" {
+			sourceDir = filepath.Join(workDir, cfg.Legacy.Root)
+		} else if len(cfg.Build.Sources) > 0 && !strings.Contains(cfg.Build.Sources[0], "*") {
+			sourceDir = filepath.Join(workDir, cfg.Build.Sources[0])
 		}
+	}
 
-		cmakeType := "Debug"
-		if profile == "release" {
-			cmakeType = "Release"
+	cmakeArgs := []string{
+		"-S", sourceDir,
+		"-B", buildDir,
+		fmt.Sprintf("-DCMAKE_BUILD_TYPE=%s", cmakeType),
+	}
+	cmakeArgs = append(cmakeArgs, tc.CMakeFlags()...)
+	cmakeArgs = appendCMakeConfigArgs(cmakeArgs, cfg, profile)
+
+	// Inject dependency paths from cstow_deps (local and workspace root)
+	depsDirs := []string{filepath.Join(workDir, "cstow_deps")}
+	if ws, err := workspace.Load(workDir); err == nil {
+		rootDeps := ws.RootDepsDir()
+		if rootDeps != depsDirs[0] {
+			depsDirs = append(depsDirs, rootDeps)
 		}
+	}
 
-		// Determine source directory
-		sourceDir := "."
-		hasCMakeLists := true
-		if _, err := os.Stat("CMakeLists.txt"); err != nil {
-			hasCMakeLists = false
-			if cfg.Legacy != nil && cfg.Legacy.Root != "" {
-				sourceDir = cfg.Legacy.Root
-			} else if len(cfg.Build.Sources) > 0 && !strings.Contains(cfg.Build.Sources[0], "*") {
-				// Use Build.Sources[0] only if it's a plain path (no globs)
-				sourceDir = cfg.Build.Sources[0]
-			}
-		}
-
-		cmakeArgs := []string{
-			"-S", sourceDir,
-			"-B", buildDir,
-			fmt.Sprintf("-DCMAKE_BUILD_TYPE=%s", cmakeType),
-		}
-		cmakeArgs = append(cmakeArgs, tc.CMakeFlags()...)
-		cmakeArgs = appendCMakeConfigArgs(cmakeArgs, cfg, profile)
-
-		// Inject dependency paths from cstow_deps
-		depsDir := filepath.Join(".", "cstow_deps")
-		if entries, err := os.ReadDir(depsDir); err == nil && len(entries) > 0 {
-			var paths []string
+	var prefixPaths []string
+	for _, ddir := range depsDirs {
+		if entries, err := os.ReadDir(ddir); err == nil && len(entries) > 0 {
 			for _, e := range entries {
 				if e.IsDir() || e.Type()&os.ModeSymlink != 0 {
-					paths = append(paths, filepath.Join(depsDir, e.Name()))
+					prefixPaths = append(prefixPaths, filepath.Join(ddir, e.Name()))
 				}
 			}
-			if len(paths) > 0 {
-				cmakeArgs = append(cmakeArgs, fmt.Sprintf("-DCMAKE_PREFIX_PATH=%s", strings.Join(paths, ";")))
+		}
+	}
+	if len(prefixPaths) > 0 {
+		cmakeArgs = append(cmakeArgs, fmt.Sprintf("-DCMAKE_PREFIX_PATH=%s", strings.Join(prefixPaths, ";")))
+	}
+
+	// Add legacy extra args
+	if cfg.Legacy != nil && len(cfg.Legacy.ExtraArgs) > 0 {
+		cmakeArgs = append(cmakeArgs, cfg.Legacy.ExtraArgs...)
+	}
+
+	// Auto-generate CMakeLists.txt if missing
+	if !hasCMakeLists && sourceDir == workDir {
+		fmt.Fprintln(stdout, ">> no CMakeLists.txt found, auto-generating from cstow.toml...")
+		var deps []cmakegen.DepTarget
+		for _, ddir := range depsDirs {
+			if entries, derr := os.ReadDir(ddir); derr == nil && len(entries) > 0 {
+				found, _ := cmakegen.DiscoverDeps(ddir)
+				deps = append(deps, found...)
 			}
 		}
-
-		// Add legacy extra args
-		if cfg.Legacy != nil && len(cfg.Legacy.ExtraArgs) > 0 {
-			cmakeArgs = append(cmakeArgs, cfg.Legacy.ExtraArgs...)
+		genOpts := cmakegen.GenerateOptions{
+			Name:      cfg.Package.Name,
+			Type:      cfg.Build.Type,
+			Std:       cfg.Package.Std,
+			Sources:   cfg.Build.Sources,
+			Include:   cfg.Build.Include,
+			Defines:   cfg.Build.Defines,
+			Deps:      deps,
+			Profiles:  cfg.Profiles,
+			Toolchain: cfg.Toolchain,
 		}
+		content := cmakegen.GenerateCMakeLists(genOpts)
+		if err := os.WriteFile(filepath.Join(workDir, "CMakeLists.txt"), []byte(content), 0o644); err != nil {
+			return fmt.Errorf("write CMakeLists.txt: %w", err)
+		}
+	}
 
-		// Auto-generate CMakeLists.txt if missing
-		if !hasCMakeLists && sourceDir == "." {
-			fmt.Println(">> no CMakeLists.txt found, auto-generating from cstow.toml...")
-			var deps []cmakegen.DepTarget
-			if entries, derr := os.ReadDir("cstow_deps"); derr == nil && len(entries) > 0 {
-				deps, _ = cmakegen.DiscoverDeps("cstow_deps")
+	fmt.Fprintf(stdout, ">> cmake configure (%s)\n", profile)
+	cmakeCmd := exec.Command("cmake", cmakeArgs...)
+	
+	// Capture output for diagnosis on failure
+	var configOut bytes.Buffer
+	cmakeCmd.Stdout = io.MultiWriter(stdout, &configOut)
+	cmakeCmd.Stderr = io.MultiWriter(stderr, &configOut)
+
+	if err := cmakeCmd.Run(); err != nil {
+		fmt.Fprintf(stderr, "\n!! cmake configure failed for %s\n", cfg.Package.Name)
+		fmt.Fprintf(stderr, "!! last configure output:\n%s\n", lastLines(configOut.String(), 20))
+		return fmt.Errorf("cmake configure failed: %w", err)
+	}
+
+	fmt.Fprintf(stdout, ">> cmake build\n")
+	buildArgs := []string{
+		"--build", buildDir,
+		"--", fmt.Sprintf("-j%d", guessJobs()),
+	}
+
+	buildExe := exec.Command("cmake", buildArgs...)
+	
+	var buildOut bytes.Buffer
+	buildExe.Stdout = io.MultiWriter(stdout, &buildOut)
+	buildExe.Stderr = io.MultiWriter(stderr, &buildOut)
+
+	if err := buildExe.Run(); err != nil {
+		fmt.Fprintf(stderr, "\n!! cmake build failed for %s\n", cfg.Package.Name)
+		fmt.Fprintf(stderr, "!! build directory: %s\n", buildDir)
+		fmt.Fprintf(stderr, "!! last build output:\n%s\n", lastLines(buildOut.String(), 20))
+
+		// Environment snapshot
+		fmt.Fprintf(stderr, "!! environment snapshot (CSTOW/CC/CXX):\n")
+		for _, env := range os.Environ() {
+			if strings.HasPrefix(env, "CSTOW_") || strings.HasPrefix(env, "CC=") || strings.HasPrefix(env, "CXX=") {
+				fmt.Fprintf(stderr, "   %s\n", env)
 			}
-			genOpts := cmakegen.GenerateOptions{
-				Name:      cfg.Package.Name,
-				Type:      cfg.Build.Type,
-				Std:       cfg.Package.Std,
-				Sources:   cfg.Build.Sources,
-				Include:   cfg.Build.Include,
-				Defines:   cfg.Build.Defines,
-				Deps:      deps,
-				Profiles:  cfg.Profiles,
-				Toolchain: cfg.Toolchain,
-			}
-			content := cmakegen.GenerateCMakeLists(genOpts)
-			if err := os.WriteFile("CMakeLists.txt", []byte(content), 0o644); err != nil {
-				return fmt.Errorf("write CMakeLists.txt: %w", err)
-			}
 		}
+		return fmt.Errorf("cmake build failed: %w", err)
+	}
 
-		fmt.Printf(">> cmake configure (%s)\n", profile)
-		cmakeCmd := exec.Command("cmake", cmakeArgs...)
-		cmakeCmd.Stdout = os.Stdout
-		cmakeCmd.Stderr = os.Stderr
-		if err := cmakeCmd.Run(); err != nil {
-			return fmt.Errorf("cmake configure failed: %w", err)
-		}
+	// Run post-build hook
+	if err := hr.Run("post-build"); err != nil {
+		return err
+	}
 
-		fmt.Println(">> cmake build")
-		buildArgs := []string{
-			"--build", buildDir,
-			"--", fmt.Sprintf("-j%d", guessJobs()),
-		}
-
-		buildExe := exec.Command("cmake", buildArgs...)
-		buildExe.Stdout = os.Stdout
-		buildExe.Stderr = os.Stderr
-		if err := buildExe.Run(); err != nil {
-			return fmt.Errorf("cmake build failed: %w", err)
-		}
-
-		// Run post-build hook
-		if err := hr.Run("post-build"); err != nil {
-			return err
-		}
-
-		fmt.Printf(">> build complete (%s/%s)\n", buildDir, cfg.Package.Name)
-		return nil
-	},
+	fmt.Fprintf(stdout, ">> build complete (%s/%s)\n", buildDir, cfg.Package.Name)
+	return nil
 }
 
 func guessJobs() int {
 	return 4
+}
+
+func lastLines(s string, n int) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return "... (truncated)\n" + strings.Join(lines[len(lines)-n:], "\n")
 }
 
 func resetBuildFlagState(cmd *cobra.Command) {
@@ -209,36 +271,53 @@ func init() {
 	rootCmd.AddCommand(buildCmd)
 }
 
-
-func checkDependenciesReady() error {
-	lockPath := "cstow.lock"
-	_, err := os.ReadFile(lockPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("cstow.lock not found — run `cstow add` to declare dependencies first")
+func checkDependenciesReady(workDir string) error {
+	lockPath := filepath.Join(workDir, "cstow.lock")
+	if _, err := os.Stat(lockPath); errors.Is(err, os.ErrNotExist) {
+		// Fallback to workspace root lock
+		if ws, err := workspace.Load(workDir); err == nil {
+			lockPath = ws.RootLockPath()
 		}
-		return fmt.Errorf("read cstow.lock: %w", err)
 	}
 
 	lf, err := resolver.LoadLock(lockPath)
 	if err != nil {
-		return fmt.Errorf("parse cstow.lock: %w", err)
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("cstow.lock not found — run `cstow add` to declare dependencies first")
+		}
+		return fmt.Errorf("read/parse lock file %s: %w", lockPath, err)
 	}
 
 	if len(lf.Packages) == 0 {
 		return nil
 	}
 
+	// Possible deps locations: local and workspace root
+	depsDirs := []string{filepath.Join(workDir, "cstow_deps")}
+	if ws, err := workspace.Load(workDir); err == nil {
+		rootDeps := ws.RootDepsDir()
+		if rootDeps != depsDirs[0] {
+			depsDirs = append(depsDirs, rootDeps)
+		}
+	}
+
 	var missing []string
 	for _, pkg := range lf.Packages {
-		pkgDir := filepath.Join("cstow_deps", pkg.Name)
-		if _, err := os.Stat(pkgDir); err != nil {
+		found := false
+		for _, ddir := range depsDirs {
+			pkgDir := filepath.Join(ddir, pkg.Name)
+			if _, err := os.Stat(pkgDir); err == nil {
+				found = true
+				break
+			}
+		}
+		if !found {
 			missing = append(missing, fmt.Sprintf("%s@%s", pkg.Name, pkg.Version))
 		}
 	}
 
 	if len(missing) > 0 {
-		return fmt.Errorf("missing dependencies: %s\nRun `cstow fetch` to download them.", strings.Join(missing, ", "))
+		return fmt.Errorf("missing dependencies: %s (run `cstow fetch` or use --fetch)", strings.Join(missing, ", "))
 	}
 	return nil
 }
@@ -277,7 +356,6 @@ func appendCMakeConfigArgs(args []string, cfg *config.Config, profile string) []
 		if p.LTO {
 			args = append(args, "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON")
 		}
-		// Also apply profile flags if present (not currently in Config struct but in PLAN.md spirit)
 	}
 
 	return args

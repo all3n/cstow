@@ -13,20 +13,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// runBuildInDir changes to workDir and executes the build command.
-func runBuildInDir(workDir string, autoFetch bool) error {
-	origDir, _ := os.Getwd()
-	if err := os.Chdir(workDir); err != nil {
-		return fmt.Errorf("chdir to %s: %w", workDir, err)
-	}
-	defer os.Chdir(origDir)
-
-	// Propagate autoFetch to buildCmd flags
-	if autoFetch {
-		buildCmd.Flags().Set("fetch", "true")
-	}
-
-	return buildCmd.RunE(buildCmd, []string{})
+// runBuildInDir changes to workDir and executes the build logic.
+func runBuildInDir(workDir string, profile, toolchainName string, autoFetch bool) error {
+	return runBuild(workDir, profile, toolchainName, autoFetch, os.Stdout, os.Stderr)
 }
 
 var workspaceCmd = &cobra.Command{
@@ -78,6 +67,7 @@ var workspaceBuildCmd = &cobra.Command{
 		}
 
 		profile, _ := cmd.Flags().GetString("profile")
+		toolchainName, _ := cmd.Flags().GetString("toolchain")
 		autoFetch, _ := cmd.Flags().GetBool("fetch")
 		jobs, _ := cmd.Flags().GetInt("jobs")
 
@@ -93,11 +83,38 @@ var workspaceBuildCmd = &cobra.Command{
 
 		fmt.Printf(">> building workspace (%d modules, profile: %s, jobs: %d)\n", len(modules), profile, jobs)
 
+		if autoFetch {
+			fmt.Println(">> fetching all workspace dependencies...")
+			deps, err := ws.AllDependencies()
+			if err != nil {
+				return fmt.Errorf("gather all dependencies: %w", err)
+			}
+			if len(deps) > 0 {
+				// Create a virtual config representing all deps in workspace root
+				cfg := &config.Config{
+					Dependencies: deps,
+					Registries:   ws.Config.Registries,
+				}
+				fetchErr := runFetch(cfg, fetchOptions{
+					LockPath:       ws.RootLockPath(),
+					DepsDir:        ws.RootDepsDir(),
+					Profile:        profile,
+					Toolchain:      toolchainName,
+					SourceFallback: true,
+					Stdout:         cmd.OutOrStdout(),
+					Stderr:         cmd.ErrOrStderr(),
+				})
+				if fetchErr != nil {
+					return fmt.Errorf("workspace auto-fetch failed: %w", fetchErr)
+				}
+			}
+		}
+
 		scheduler := workspace.NewScheduler(g, jobs)
 		var (
-			mu      sync.Mutex
-			count   int
-			total   = len(modules)
+			mu    sync.Mutex
+			count int
+			total = len(modules)
 		)
 
 		task := func(ctx context.Context, m *workspace.Module) error {
@@ -107,7 +124,8 @@ var workspaceBuildCmd = &cobra.Command{
 			mu.Unlock()
 
 			fmt.Printf("\n>> [%d/%d] building %s\n", current, total, m.Name)
-			if err := runBuildInDir(m.Path, autoFetch); err != nil {
+			// Pass autoFetch=false to individual builds because we've already fetched everything
+			if err := runBuildInDir(m.Path, profile, toolchainName, false); err != nil {
 				return fmt.Errorf("build %s failed: %w", m.Name, err)
 			}
 			return nil
@@ -231,14 +249,66 @@ var workspaceGenCmd = &cobra.Command{
 	},
 }
 
+var workspaceFetchCmd = &cobra.Command{
+	Use:   "fetch",
+	Short: "Fetch all workspace dependencies into root cache",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dir, _ := os.Getwd()
+		ws, err := workspace.Load(dir)
+		if err != nil {
+			return err
+		}
+
+		profile, _ := cmd.Flags().GetString("profile")
+		toolchainName, _ := cmd.Flags().GetString("toolchain")
+		sourceFallback, _ := cmd.Flags().GetBool("source-fallback")
+
+		deps, err := ws.AllDependencies()
+		if err != nil {
+			return err
+		}
+
+		if len(deps) == 0 {
+			fmt.Println("No dependencies in workspace")
+			return nil
+		}
+
+		fmt.Printf(">> fetching workspace dependencies (%d total)\n", len(deps))
+
+		// Create a virtual config representing all deps in workspace root
+		cfg := &config.Config{
+			Dependencies: deps,
+			Registries:   ws.Config.Registries,
+		}
+
+		return runFetch(cfg, fetchOptions{
+			LockPath:       ws.RootLockPath(),
+			DepsDir:        ws.RootDepsDir(),
+			Profile:        profile,
+			Toolchain:      toolchainName,
+			SourceFallback: sourceFallback,
+			Stdout:         cmd.OutOrStdout(),
+			Stderr:         cmd.ErrOrStderr(),
+		})
+	},
+}
+
 func init() {
 	workspaceListCmd.Flags().Bool("graph", false, "show dependency-aware build order")
 	workspaceCmd.AddCommand(workspaceListCmd)
 	workspaceCmd.AddCommand(workspaceBuildCmd)
 	workspaceCmd.AddCommand(workspaceCleanCmd)
+	workspaceCmd.AddCommand(workspaceFetchCmd)
+
 	workspaceBuildCmd.Flags().StringP("profile", "p", "debug", "build profile")
+	workspaceBuildCmd.Flags().String("toolchain", "auto", "toolchain selection")
 	workspaceBuildCmd.Flags().Bool("fetch", false, "automatically fetch missing dependencies before building")
 	workspaceBuildCmd.Flags().IntP("jobs", "j", 1, "number of parallel build jobs")
+
+	workspaceFetchCmd.Flags().StringP("profile", "p", "debug", "build profile")
+	workspaceFetchCmd.Flags().String("toolchain", "auto", "toolchain selection")
+	workspaceFetchCmd.Flags().Bool("source-fallback", true, "allow source builds")
+
 	workspaceGenCmd.Flags().Bool("cmakelists", true, "generate CMakeLists.txt")
 	workspaceGenCmd.Flags().Bool("presets", true, "generate CMakePresets.json")
 	workspaceGenCmd.Flags().Bool("force", false, "overwrite existing files")

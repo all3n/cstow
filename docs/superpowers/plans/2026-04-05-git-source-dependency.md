@@ -669,7 +669,13 @@ func TestFetchGitSourceClonesAndBuilds(t *testing.T) {
 	cfg, err := config.Load("cstow.toml")
 	require.NoError(t, err)
 
-	err = runFetch(cfg, "debug", "auto", false, os.Stdout, os.Stderr)
+	err = runFetch(cfg, fetchOptions{
+		Profile:        "debug",
+		Toolchain:      "auto",
+		SourceFallback: false,
+		Stdout:         os.Stdout,
+		Stderr:         os.Stderr,
+	})
 	require.NoError(t, err)
 
 	// Verify cstow_deps symlink exists

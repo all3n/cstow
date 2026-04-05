@@ -83,7 +83,7 @@ build_type = "static"
 	t.Cleanup(func() { fetchNewRegistryClient = prevFetchFactory })
 
 	// Verify: build check fails before fetch
-	err = checkDependenciesReady()
+	err = checkDependenciesReady(".")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing dependencies")
 
@@ -104,6 +104,6 @@ build_type = "static"
 	assert.Equal(t, "artifact-data", string(content))
 
 	// Verify: build check passes after fetch
-	err = checkDependenciesReady()
+	err = checkDependenciesReady(".")
 	assert.NoError(t, err, "all deps should be ready after fetch")
 }

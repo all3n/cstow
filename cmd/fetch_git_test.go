@@ -76,7 +76,13 @@ func TestFetchGitSourceClonesAndBuilds(t *testing.T) {
 	loadedCfg, err := config.Load("cstow.toml")
 	require.NoError(t, err)
 
-	err = runFetch(loadedCfg, "debug", "auto", false, os.Stdout, os.Stderr)
+	err = runFetch(loadedCfg, fetchOptions{
+		Profile:        "debug",
+		Toolchain:      "auto",
+		SourceFallback: false,
+		Stdout:         os.Stdout,
+		Stderr:         os.Stderr,
+	})
 	require.NoError(t, err)
 
 	// Verify cstow_deps symlink exists
@@ -135,7 +141,13 @@ func TestFetchGitSourceSkipsRegistry(t *testing.T) {
 	t.Cleanup(func() { fetchGitCloneFunc = prevGitClone })
 
 	loadedCfg, _ := config.Load("cstow.toml")
-	_ = runFetch(loadedCfg, "debug", "auto", false, os.Stdout, os.Stderr)
+	_ = runFetch(loadedCfg, fetchOptions{
+		Profile:        "debug",
+		Toolchain:      "auto",
+		SourceFallback: false,
+		Stdout:         os.Stdout,
+		Stderr:         os.Stderr,
+	})
 
 	assert.False(t, registryCalled)
 }

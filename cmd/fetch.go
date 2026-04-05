@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/all3n/cstow/internal/artifactdb"
 	"github.com/all3n/cstow/internal/config"
+	"github.com/all3n/cstow/internal/flock"
 	"github.com/all3n/cstow/internal/pack"
 	"github.com/all3n/cstow/internal/registry"
 	"github.com/all3n/cstow/internal/repository"
@@ -60,12 +62,49 @@ var fetchCmd = &cobra.Command{
 		toolchainName, _ := cmd.Flags().GetString("toolchain")
 		sourceFallback, _ := cmd.Flags().GetBool("source-fallback")
 
-		return runFetch(cfg, profile, toolchainName, sourceFallback, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		return runFetch(cfg, fetchOptions{
+			Profile:        profile,
+			Toolchain:      toolchainName,
+			SourceFallback: sourceFallback,
+			Stdout:         cmd.OutOrStdout(),
+			Stderr:         cmd.ErrOrStderr(),
+		})
 	},
 }
 
-func runFetch(cfg *config.Config, profile, toolchainName string, sourceFallback bool, stdout, stderr io.Writer) error {
-	lockPath := "cstow.lock"
+type fetchOptions struct {
+	WorkDir        string
+	LockPath       string
+	DepsDir        string
+	Profile        string
+	Toolchain      string
+	SourceFallback bool
+	Stdout         io.Writer
+	Stderr         io.Writer
+}
+
+func runFetch(cfg *config.Config, opts fetchOptions) error {
+	workDir := opts.WorkDir
+	if workDir == "" {
+		workDir = "."
+	}
+	lockPath := opts.LockPath
+	if lockPath == "" {
+		lockPath = filepath.Join(workDir, "cstow.lock")
+	}
+	depsDir := opts.DepsDir
+	if depsDir == "" {
+		depsDir = filepath.Join(workDir, "cstow_deps")
+	}
+
+	// Acquire file lock for the project's dependency operations.
+	// We use a hidden .cstow.lock.lock file to manage access to cstow.lock and cstow_deps.
+	projectLock := flock.New(filepath.Join(filepath.Dir(lockPath), ".cstow.lock.lock"))
+	if err := projectLock.Lock(5 * time.Minute); err != nil {
+		return fmt.Errorf("acquire project lock: %w", err)
+	}
+	defer projectLock.Unlock()
+
 	lf, err := resolver.LoadLock(lockPath)
 	if err != nil {
 		r := resolver.New(resolver.NewFSCache(), nil)
@@ -79,7 +118,7 @@ func runFetch(cfg *config.Config, profile, toolchainName string, sourceFallback 
 	}
 
 	if len(lf.Packages) == 0 {
-		fmt.Fprintln(stdout, "No dependencies to fetch")
+		fmt.Fprintln(opts.Stdout, "No dependencies to fetch")
 		return nil
 	}
 
@@ -103,7 +142,7 @@ func runFetch(cfg *config.Config, profile, toolchainName string, sourceFallback 
 		if installCtx != nil || installCtxErr != nil {
 			return installCtx, installCtxErr
 		}
-		installCtx, installCtxErr = newRepositoryInstallContext(cfg, profile, toolchainName)
+		installCtx, installCtxErr = newRepositoryInstallContext(cfg, opts.Profile, opts.Toolchain)
 		return installCtx, installCtxErr
 	}
 
@@ -140,7 +179,7 @@ func runFetch(cfg *config.Config, profile, toolchainName string, sourceFallback 
 				pkg.ABITag = resolvedABITag
 				lockDirty = true
 			}
-			fmt.Fprintf(stdout, "  [cached] %s@%s (%s, %s)\n", pkg.Name, pkg.Version, resolvedABITag, displayBuildType(buildType))
+			fmt.Fprintf(opts.Stdout, "  [cached] %s@%s (%s, %s)\n", pkg.Name, pkg.Version, resolvedABITag, displayBuildType(buildType))
 			continue
 		}
 
@@ -154,8 +193,8 @@ func runFetch(cfg *config.Config, profile, toolchainName string, sourceFallback 
 				Context:   ctx,
 				BuildType: buildType,
 				CMake:     gitCMakeFromLock(cfg, pkg.Name),
-				Stdout:    stdout,
-				Stderr:    stderr,
+				Stdout:    opts.Stdout,
+				Stderr:    opts.Stderr,
 			})
 			if err != nil {
 				return fmt.Errorf("git source build for %s@%s: %w", pkg.Name, pkg.Version, err)
@@ -171,15 +210,15 @@ func runFetch(cfg *config.Config, profile, toolchainName string, sourceFallback 
 				lockDirty = true
 			}
 			if result.Cached {
-				fmt.Fprintf(stdout, "  [cached-git] %s@%s (%s, %s)\n", pkg.Name, result.Version, result.ABITag, result.BuildType)
+				fmt.Fprintf(opts.Stdout, "  [cached-git] %s@%s (%s, %s)\n", pkg.Name, result.Version, result.ABITag, result.BuildType)
 			} else {
-				fmt.Fprintf(stdout, "  [built-git] %s@%s (%s) -> %s\n", pkg.Name, result.Version, result.BuildType, result.InstallDir)
+				fmt.Fprintf(opts.Stdout, "  [built-git] %s@%s (%s) -> %s\n", pkg.Name, result.Version, result.BuildType, result.InstallDir)
 			}
 			continue
 		}
 
 		if s3client != nil && !strings.HasPrefix(pkg.Source, "local") {
-			fmt.Fprintf(stdout, "  [fetch] %s@%s ...\n", pkg.Name, pkg.Version)
+			fmt.Fprintf(opts.Stdout, "  [fetch] %s@%s ...\n", pkg.Name, pkg.Version)
 
 			var data []byte
 			var fetchedABITag string
@@ -242,21 +281,21 @@ func runFetch(cfg *config.Config, profile, toolchainName string, sourceFallback 
 					pkg.ABITag = fetchedABITag
 					lockDirty = true
 				}
-				fmt.Fprintf(stdout, "  [done]  %s@%s (%s) -> %s\n", pkg.Name, pkg.Version, displayBuildType(fetchedBuildType), destDir)
+				fmt.Fprintf(opts.Stdout, "  [done]  %s@%s (%s) -> %s\n", pkg.Name, pkg.Version, displayBuildType(fetchedBuildType), destDir)
 				continue
 			}
 
-			fmt.Fprintf(stdout, "  [warn] prebuilt artifact unavailable for %s@%s, trying source fallback\n", pkg.Name, pkg.Version)
+			fmt.Fprintf(opts.Stdout, "  [warn] prebuilt artifact unavailable for %s@%s, trying source fallback\n", pkg.Name, pkg.Version)
 		}
 
 		if strings.HasPrefix(pkg.Source, "local") && pkg.Path != "" {
 			depPaths[pkg.Name] = pkg.Path
-			fmt.Fprintf(stdout, "  [local] %s@%s -> %s\n", pkg.Name, pkg.Version, pkg.Path)
+			fmt.Fprintf(opts.Stdout, "  [local] %s@%s -> %s\n", pkg.Name, pkg.Version, pkg.Path)
 			continue
 		}
 
-		if !sourceFallback {
-			fmt.Fprintf(stdout, "  [skip] %s@%s (source fallback disabled)\n", pkg.Name, pkg.Version)
+		if !opts.SourceFallback {
+			fmt.Fprintf(opts.Stdout, "  [skip] %s@%s (source fallback disabled)\n", pkg.Name, pkg.Version)
 			continue
 		}
 
@@ -268,8 +307,8 @@ func runFetch(cfg *config.Config, profile, toolchainName string, sourceFallback 
 		result, err := installFromRepository(pkg.Name, pkg.Version, repositoryInstallOptions{
 			Context:   ctx,
 			BuildType: buildType,
-			Stdout:    stdout,
-			Stderr:    stderr,
+			Stdout:    opts.Stdout,
+			Stderr:    opts.Stderr,
 		})
 		if err != nil {
 			return fmt.Errorf("source fallback for %s@%s: %w", pkg.Name, pkg.Version, err)
@@ -285,9 +324,9 @@ func runFetch(cfg *config.Config, profile, toolchainName string, sourceFallback 
 			lockDirty = true
 		}
 		if result.Cached {
-			fmt.Fprintf(stdout, "  [cached-source] %s@%s (%s, %s)\n", pkg.Name, result.Version, result.ABITag, result.BuildType)
+			fmt.Fprintf(opts.Stdout, "  [cached-source] %s@%s (%s, %s)\n", pkg.Name, result.Version, result.ABITag, result.BuildType)
 		} else {
-			fmt.Fprintf(stdout, "  [built] %s@%s (%s) -> %s\n", pkg.Name, result.Version, result.BuildType, result.InstallDir)
+			fmt.Fprintf(opts.Stdout, "  [built] %s@%s (%s) -> %s\n", pkg.Name, result.Version, result.BuildType, result.InstallDir)
 		}
 	}
 
@@ -297,20 +336,19 @@ func runFetch(cfg *config.Config, profile, toolchainName string, sourceFallback 
 		}
 	}
 
-	depsDir := filepath.Join(".", "cstow_deps")
 	if err := os.MkdirAll(depsDir, 0o755); err != nil {
-		return err
+		return fmt.Errorf("create deps dir: %w", err)
 	}
 
 	var prefixPaths []string
 	for _, pkg := range lf.Packages {
 		src, ok := depPaths[pkg.Name]
 		if !ok {
-			fmt.Fprintf(stdout, "  [warn] no dependency path available for %s@%s\n", pkg.Name, pkg.Version)
+			fmt.Fprintf(opts.Stdout, "  [warn] no dependency path available for %s@%s\n", pkg.Name, pkg.Version)
 			continue
 		}
 		if _, err := os.Stat(src); err != nil {
-			fmt.Fprintf(stdout, "  [warn] skip %s@%s: %v\n", pkg.Name, pkg.Version, err)
+			fmt.Fprintf(opts.Stdout, "  [warn] skip %s@%s: %v\n", pkg.Name, pkg.Version, err)
 			continue
 		}
 
@@ -322,14 +360,14 @@ func runFetch(cfg *config.Config, profile, toolchainName string, sourceFallback 
 			linkTarget = rel
 		}
 		if err := os.Symlink(linkTarget, dst); err != nil {
-			fmt.Fprintf(stdout, "  [warn] symlink %s: %v\n", pkg.Name, err)
+			fmt.Fprintf(opts.Stdout, "  [warn] symlink %s: %v\n", pkg.Name, err)
 			continue
 		}
 		prefixPaths = append(prefixPaths, dst)
 	}
 
 	if len(prefixPaths) > 0 {
-		fmt.Fprintf(stdout, "\n  CMAKE_PREFIX_PATH=%s\n", strings.Join(prefixPaths, string(filepath.ListSeparator)))
+		fmt.Fprintf(opts.Stdout, "\n  CMAKE_PREFIX_PATH=%s\n", strings.Join(prefixPaths, string(filepath.ListSeparator)))
 	}
 
 	return nil
@@ -575,18 +613,20 @@ func prependUniqueCandidate(candidates []fetchManifestCandidate, preferred fetch
 	return filtered
 }
 
-func linkFetchedArtifact(name, src string) error {
-	depsDir := filepath.Join(".", "cstow_deps")
+func linkFetchedArtifactAt(name, src, depsDir string) error {
 	if err := os.MkdirAll(depsDir, 0o755); err != nil {
-		return err
+		return fmt.Errorf("create deps dir %s: %w", depsDir, err)
 	}
-
 	dst := filepath.Join(depsDir, name)
 	_ = os.Remove(dst)
 	if err := os.Symlink(src, dst); err != nil {
 		return fmt.Errorf("symlink %s: %w", name, err)
 	}
 	return nil
+}
+
+func linkFetchedArtifact(name, src string) error {
+	return linkFetchedArtifactAt(name, src, "cstow_deps")
 }
 
 func isArtifactNotFoundError(err error) bool {

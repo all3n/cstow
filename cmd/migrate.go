@@ -50,13 +50,13 @@ func migrateCMake(name, version string) error {
 		return fmt.Errorf("scan CMakeLists.txt: %w", err)
 	}
 
-	fmt.Printf(">> found %d dependencies\n", len(result.Dependencies))
+	fmt.Printf(">> found %d dependencies (std: %s)\n", len(result.Dependencies), result.Std)
 	for _, dep := range result.Dependencies {
 		fmt.Printf("   - %s@%s (source: %s)\n", dep.Name, dep.Version, dep.Source)
 	}
 
 	extraArgs := []string{}
-	cfg := legacy.GenerateCStowToml(name, version, ".", extraArgs, result.Dependencies)
+	cfg := legacy.GenerateCStowToml(name, version, result.Std, ".", extraArgs, result.Dependencies)
 
 	// Save cstow.toml
 	if _, err := os.Stat("cstow.toml"); err == nil {

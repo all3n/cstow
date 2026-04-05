@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/all3n/cstow/internal/config"
@@ -19,7 +20,7 @@ type Workspace struct {
 // Load discovers and loads a workspace from the given directory.
 // Walks up the directory tree to find a cstow.toml with [workspace] section.
 func Load(dir string) (*Workspace, error) {
-	searchDir := dir
+	searchDir, _ := filepath.Abs(dir)
 	for {
 		cfgPath := filepath.Join(searchDir, "cstow.toml")
 		if _, err := os.Stat(cfgPath); err == nil {
@@ -117,6 +118,60 @@ func (w *Workspace) MergedDependencies(moduleCfg *config.Config) []config.Depend
 	}
 
 	return result
+}
+
+// RootLockPath returns the path to cstow.lock at the workspace root.
+func (w *Workspace) RootLockPath() string {
+	return filepath.Join(w.Root, "cstow.lock")
+}
+
+// RootDepsDir returns the path to cstow_deps directory at the workspace root.
+func (w *Workspace) RootDepsDir() string {
+	return filepath.Join(w.Root, "cstow_deps")
+}
+
+// AllDependencies returns a merged list of all unique dependencies in the workspace.
+// This is used to resolve and fetch all dependencies into the root at once.
+func (w *Workspace) AllDependencies() ([]config.Dependency, error) {
+	seen := make(map[string]config.Dependency)
+
+	// Collect from root
+	for _, dep := range w.Config.Dependencies {
+		if dep.Source == "local" && dep.Path != "" && !filepath.IsAbs(dep.Path) {
+			dep.Path = filepath.Join(w.Root, dep.Path)
+		}
+		seen[dep.Name] = dep
+	}
+
+	// Collect from each module
+	modules, err := w.LoadModules()
+	if err != nil {
+		return nil, fmt.Errorf("load modules for all-deps: %w", err)
+	}
+
+	for _, m := range modules {
+		for _, dep := range m.Cfg.Dependencies {
+			if dep.Source == "local" && dep.Path != "" && !filepath.IsAbs(dep.Path) {
+				dep.Path = filepath.Join(m.Path, dep.Path)
+			}
+			// In a workspace, module-level dependencies take precedence
+			// if they have the same name.
+			seen[dep.Name] = dep
+		}
+	}
+
+	// Convert map to slice
+	var deps []config.Dependency
+	for _, d := range seen {
+		deps = append(deps, d)
+	}
+
+	// Sort for determinism
+	sort.Slice(deps, func(i, j int) bool {
+		return deps[i].Name < deps[j].Name
+	})
+
+	return deps, nil
 }
 
 // expandMembers expands glob patterns in member list
