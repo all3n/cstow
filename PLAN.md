@@ -69,21 +69,21 @@
 
 ## 三、建议的新阶段划分
 
-## Phase A — 打通主用户路径
+## Phase A — 打通主用户路径 (已完成)
 
 **目标**：让用户可以稳定完成“声明依赖、拿到依赖、构建项目”。
 
 ### 重点任务
 
-- 明确依赖获取策略：
+- 明确依赖获取策略： (已完成)
   - 先尝试 registry 预编译包
   - 缺失时回退到 repository recipe + source build
-- 让 `add` 在写入配置前至少做基本校验：
+- 让 `add` 在写入配置前至少做基本校验： (已完成)
   - registry 中是否存在版本
   - 或 repository 中是否存在 recipe
-- 让 `build` 对缺失依赖给出明确动作建议，或直接触发受控的补全流程
-- 补齐项目构建路径中对 profile、defines、hooks 的使用
-- 增加覆盖真实命令链路的集成测试
+- 让 `build` 對缺失依賴給出明確動作建議，或直接觸發受控的補全流程 (已完成，支持 --fetch 自动补全)
+- 補齊項目構建路徑中對 profile、defines、hooks 的使用 (已完成，支持 pre-build/post-build)
+- 增加覆蓋真實命令鏈路的集成測試 (已完成，新增 cmd/e2e_workflow_test.go)
 
 ### 完成标准
 

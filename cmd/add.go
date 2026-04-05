@@ -31,6 +31,7 @@ var addCmd = &cobra.Command{
 	Short: "Add a dependency to the project",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		defer resetAddFlagState(cmd)
 		cfgPath := "cstow.toml"
 		if _, err := os.Stat(cfgPath); err != nil {
 			return fmt.Errorf("cstow.toml not found in current directory")
@@ -154,6 +155,23 @@ func validateRepoDependency(name, version string) error {
 		return fmt.Errorf("package %q not found in repository: %w", name, err)
 	}
 	return nil
+}
+
+func resetAddFlagState(cmd *cobra.Command) {
+	resetAddFlag := func(name string) {
+		flag := cmd.Flags().Lookup(name)
+		if flag == nil {
+			return
+		}
+		if replacer, ok := flag.Value.(interface{ Replace([]string) error }); ok {
+			_ = replacer.Replace(nil)
+		} else {
+			_ = flag.Value.Set(flag.DefValue)
+		}
+		flag.Changed = false
+	}
+	resetAddFlag("source")
+	resetAddFlag("build-type")
 }
 
 func init() {

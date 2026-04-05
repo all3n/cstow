@@ -19,8 +19,10 @@ var buildCmd = &cobra.Command{
 	Use:   "build",
 	Short: "Build the project",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		defer resetBuildFlagState(cmd)
 		profile, _ := cmd.Flags().GetString("profile")
 		toolchainName, _ := cmd.Flags().GetString("toolchain")
+		autoFetch, _ := cmd.Flags().GetBool("fetch")
 
 		cfgPath := "cstow.toml"
 		if _, err := os.Stat(cfgPath); err != nil {
@@ -51,7 +53,18 @@ var buildCmd = &cobra.Command{
 
 		// Check that all dependencies from cstow.lock are present
 		if err := checkDependenciesReady(); err != nil {
-			return err
+			if autoFetch {
+				fmt.Println(">> missing dependencies, fetching...")
+				if err := runFetch(cfg, profile, toolchainName, true, cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+					return fmt.Errorf("auto-fetch failed: %w", err)
+				}
+				// Re-check after fetch
+				if err := checkDependenciesReady(); err != nil {
+					return err
+				}
+			} else {
+				return err
+			}
 		}
 
 		// Run pre-build hook
@@ -71,12 +84,15 @@ var buildCmd = &cobra.Command{
 			cmakeType = "Release"
 		}
 
-		// Determine source directory: build.sources > legacy.root > "."
+		// Determine source directory
 		sourceDir := "."
-		if len(cfg.Build.Sources) > 0 {
-			sourceDir = cfg.Build.Sources[0]
-		} else if cfg.Legacy != nil && cfg.Legacy.Root != "" {
-			sourceDir = cfg.Legacy.Root
+		if _, err := os.Stat("CMakeLists.txt"); err != nil {
+			if cfg.Legacy != nil && cfg.Legacy.Root != "" {
+				sourceDir = cfg.Legacy.Root
+			} else if len(cfg.Build.Sources) > 0 && !strings.Contains(cfg.Build.Sources[0], "*") {
+				// Use Build.Sources[0] only if it's a plain path (no globs)
+				sourceDir = cfg.Build.Sources[0]
+			}
 		}
 
 		cmakeArgs := []string{
@@ -127,6 +143,11 @@ var buildCmd = &cobra.Command{
 			return fmt.Errorf("cmake build failed: %w", err)
 		}
 
+		// Run post-build hook
+		if err := hr.Run("post-build"); err != nil {
+			return err
+		}
+
 		fmt.Printf(">> build complete (%s/%s)\n", buildDir, cfg.Package.Name)
 		return nil
 	},
@@ -136,11 +157,31 @@ func guessJobs() int {
 	return 4
 }
 
+func resetBuildFlagState(cmd *cobra.Command) {
+	resetBuildFlag := func(name string) {
+		flag := cmd.Flags().Lookup(name)
+		if flag == nil {
+			return
+		}
+		if replacer, ok := flag.Value.(interface{ Replace([]string) error }); ok {
+			_ = replacer.Replace(nil)
+		} else {
+			_ = flag.Value.Set(flag.DefValue)
+		}
+		flag.Changed = false
+	}
+	resetBuildFlag("profile")
+	resetBuildFlag("toolchain")
+	resetBuildFlag("fetch")
+}
+
 func init() {
 	buildCmd.Flags().StringP("profile", "p", "debug", "build profile (debug|release)")
 	buildCmd.Flags().String("toolchain", "auto", "compiler to use (auto|gcc|clang|msvc)")
+	buildCmd.Flags().Bool("fetch", false, "automatically fetch missing dependencies before building")
 	rootCmd.AddCommand(buildCmd)
 }
+
 
 func checkDependenciesReady() error {
 	lockPath := "cstow.lock"
@@ -179,6 +220,10 @@ func checkDependenciesReady() error {
 func appendCMakeConfigArgs(args []string, cfg *config.Config, profile string) []string {
 	// Inject build.defines as cmake -D flags
 	for _, d := range cfg.Build.Defines {
+		args = append(args, "-D"+d)
+	}
+	// Inject build.flags.defines
+	for _, d := range cfg.Build.Flags.Defines {
 		args = append(args, "-D"+d)
 	}
 

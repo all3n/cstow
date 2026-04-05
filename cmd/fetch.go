@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,240 +52,244 @@ var fetchCmd = &cobra.Command{
 			return fmt.Errorf("load config: %w", err)
 		}
 
-		lockPath := "cstow.lock"
-		lf, err := resolver.LoadLock(lockPath)
-		if err != nil {
-			r := resolver.New(resolver.NewFSCache(), nil)
-			lf, err = r.Resolve(cfg.Dependencies)
-			if err != nil {
-				return fmt.Errorf("resolve dependencies: %w", err)
-			}
-			if err := resolver.SaveLock(lockPath, lf); err != nil {
-				return fmt.Errorf("save lock file: %w", err)
-			}
-		}
-
-		if len(lf.Packages) == 0 {
-			cmd.Println("No dependencies to fetch")
-			return nil
-		}
-
 		profile, _ := cmd.Flags().GetString("profile")
 		toolchainName, _ := cmd.Flags().GetString("toolchain")
 		sourceFallback, _ := cmd.Flags().GetBool("source-fallback")
 
-		cache := resolver.NewFSCache()
+		return runFetch(cfg, profile, toolchainName, sourceFallback, cmd.OutOrStdout(), cmd.ErrOrStderr())
+	},
+}
 
-		var s3client fetchRegistryClient
-		globalCfg, err := config.LoadGlobal()
+func runFetch(cfg *config.Config, profile, toolchainName string, sourceFallback bool, stdout, stderr io.Writer) error {
+	lockPath := "cstow.lock"
+	lf, err := resolver.LoadLock(lockPath)
+	if err != nil {
+		r := resolver.New(resolver.NewFSCache(), nil)
+		lf, err = r.Resolve(cfg.Dependencies)
 		if err != nil {
-			return fmt.Errorf("load global config: %w", err)
+			return fmt.Errorf("resolve dependencies: %w", err)
 		}
-		if reg, regErr := config.ResolvePrimaryRegistry(cfg.Registries, globalCfg); regErr == nil {
-			s3client, err = fetchNewRegistryClient(context.Background(), reg)
-			if err != nil {
-				return fmt.Errorf("create S3 client: %w", err)
-			}
+		if err := resolver.SaveLock(lockPath, lf); err != nil {
+			return fmt.Errorf("save lock file: %w", err)
 		}
+	}
 
-		var installCtx *repositoryInstallContext
-		var installCtxErr error
-		ensureInstallCtx := func() (*repositoryInstallContext, error) {
-			if installCtx != nil || installCtxErr != nil {
-				return installCtx, installCtxErr
-			}
-			installCtx, installCtxErr = newRepositoryInstallContext(cfg, profile, toolchainName)
+	if len(lf.Packages) == 0 {
+		fmt.Fprintln(stdout, "No dependencies to fetch")
+		return nil
+	}
+
+	cache := resolver.NewFSCache()
+
+	var s3client fetchRegistryClient
+	globalCfg, err := config.LoadGlobal()
+	if err != nil {
+		return fmt.Errorf("load global config: %w", err)
+	}
+	if reg, regErr := config.ResolvePrimaryRegistry(cfg.Registries, globalCfg); regErr == nil {
+		s3client, err = fetchNewRegistryClient(context.Background(), reg)
+		if err != nil {
+			return fmt.Errorf("create S3 client: %w", err)
+		}
+	}
+
+	var installCtx *repositoryInstallContext
+	var installCtxErr error
+	ensureInstallCtx := func() (*repositoryInstallContext, error) {
+		if installCtx != nil || installCtxErr != nil {
 			return installCtx, installCtxErr
 		}
+		installCtx, installCtxErr = newRepositoryInstallContext(cfg, profile, toolchainName)
+		return installCtx, installCtxErr
+	}
 
-		detectedABITag := ""
-		if ctx, err := ensureInstallCtx(); err == nil {
-			detectedABITag = ctx.detectedABITag()
+	detectedABITag := ""
+	if ctx, err := ensureInstallCtx(); err == nil {
+		detectedABITag = ctx.detectedABITag()
+	}
+
+	depPaths := make(map[string]string, len(lf.Packages))
+	lockDirty := false
+
+	for i := range lf.Packages {
+		pkg := &lf.Packages[i]
+		abiTags := candidateABITags(pkg.ABITag, detectedABITag)
+		buildType := fetchBuildType(pkg.Name, *pkg, cfg)
+		if pkg.BuildType != buildType {
+			pkg.BuildType = buildType
+			lockDirty = true
 		}
 
-		depPaths := make(map[string]string, len(lf.Packages))
-		lockDirty := false
-
-		for i := range lf.Packages {
-			pkg := &lf.Packages[i]
-			abiTags := candidateABITags(pkg.ABITag, detectedABITag)
-			buildType := fetchBuildType(pkg.Name, *pkg, cfg)
-			if pkg.BuildType != buildType {
-				pkg.BuildType = buildType
+		if path, resolvedABITag, ok := findCachedPackage(cache, pkg.Name, pkg.Version, abiTags, buildType); ok {
+			if err := indexSuccessfulArtifact(cache, indexedArtifact{
+				Name:       pkg.Name,
+				Version:    pkg.Version,
+				ABITag:     resolvedABITag,
+				BuildType:  buildType,
+				InstallDir: path,
+				Origin:     "unknown",
+			}); err != nil {
+				return err
+			}
+			depPaths[pkg.Name] = dependencyLinkTarget(*pkg, path)
+			if pkg.ABITag != resolvedABITag {
+				pkg.ABITag = resolvedABITag
 				lockDirty = true
 			}
+			fmt.Fprintf(stdout, "  [cached] %s@%s (%s, %s)\n", pkg.Name, pkg.Version, resolvedABITag, displayBuildType(buildType))
+			continue
+		}
 
-			if path, resolvedABITag, ok := findCachedPackage(cache, pkg.Name, pkg.Version, abiTags, buildType); ok {
+		if s3client != nil && !strings.HasPrefix(pkg.Source, "local") {
+			fmt.Fprintf(stdout, "  [fetch] %s@%s ...\n", pkg.Name, pkg.Version)
+
+			var data []byte
+			var fetchedABITag string
+			var fetchedBuildType string
+			var fetchedHashID string
+			var fetchedBuildTags []string
+			var downloadErr error
+
+			manifest, manifestErr := s3client.GetManifest(context.Background(), pkg.Name, pkg.Version)
+			if manifestErr == nil {
+				artifact, selectErr := registry.SelectArtifact(manifest, abiTags, buildType)
+				if selectErr != nil {
+					downloadErr = selectErr
+				} else {
+					data, downloadErr = downloadFromManifestArtifact(context.Background(), s3client, pkg.Name, pkg.Version, *artifact)
+					if downloadErr == nil {
+						fetchedABITag = artifact.ABITag
+						fetchedBuildType = artifact.BuildType
+						fetchedHashID = artifact.HashID
+						fetchedBuildTags = artifact.BuildTags
+					}
+				}
+			} else {
+				for _, abiTag := range abiTags {
+					data, downloadErr = s3client.Download(context.Background(), pkg.Name, pkg.Version, abiTag, buildType, "")
+					if downloadErr == nil {
+						fetchedABITag = abiTag
+						fetchedBuildType = buildType
+						break
+					}
+				}
+			}
+
+			if downloadErr == nil {
+				if err := verifyArtifactHash(data, fetchedHashID); err != nil {
+					return fmt.Errorf("integrity check failed for %s@%s: %w", pkg.Name, pkg.Version, err)
+				}
+				destDir := cache.Path(pkg.Name, pkg.Version, fetchedABITag, fetchedBuildType)
+				if err := os.MkdirAll(destDir, 0o755); err != nil {
+					return fmt.Errorf("create cache dir: %w", err)
+					}
+				if err := pack.ExtractTarZst(data, destDir); err != nil {
+					return fmt.Errorf("extract %s@%s: %w", pkg.Name, pkg.Version, err)
+				}
+
 				if err := indexSuccessfulArtifact(cache, indexedArtifact{
 					Name:       pkg.Name,
 					Version:    pkg.Version,
-					ABITag:     resolvedABITag,
-					BuildType:  buildType,
-					InstallDir: path,
-					Origin:     "unknown",
+					ABITag:     fetchedABITag,
+					BuildType:  fetchedBuildType,
+					HashID:     fetchedHashID,
+					BuildTags:  fetchedBuildTags,
+					InstallDir: destDir,
+					Origin:     "registry",
 				}); err != nil {
 					return err
 				}
-				depPaths[pkg.Name] = dependencyLinkTarget(*pkg, path)
-				if pkg.ABITag != resolvedABITag {
-					pkg.ABITag = resolvedABITag
+				depPaths[pkg.Name] = destDir
+				if pkg.ABITag != fetchedABITag {
+					pkg.ABITag = fetchedABITag
 					lockDirty = true
 				}
-				cmd.Printf("  [cached] %s@%s (%s, %s)\n", pkg.Name, pkg.Version, resolvedABITag, displayBuildType(buildType))
+				fmt.Fprintf(stdout, "  [done]  %s@%s (%s) -> %s\n", pkg.Name, pkg.Version, displayBuildType(fetchedBuildType), destDir)
 				continue
 			}
 
-			if s3client != nil && !strings.HasPrefix(pkg.Source, "local") {
-				cmd.Printf("  [fetch] %s@%s ...\n", pkg.Name, pkg.Version)
-
-				var data []byte
-				var fetchedABITag string
-				var fetchedBuildType string
-				var fetchedHashID string
-				var fetchedBuildTags []string
-				var downloadErr error
-
-				manifest, manifestErr := s3client.GetManifest(context.Background(), pkg.Name, pkg.Version)
-				if manifestErr == nil {
-					artifact, selectErr := registry.SelectArtifact(manifest, abiTags, buildType)
-					if selectErr != nil {
-						downloadErr = selectErr
-					} else {
-						data, downloadErr = downloadFromManifestArtifact(context.Background(), s3client, pkg.Name, pkg.Version, *artifact)
-						if downloadErr == nil {
-							fetchedABITag = artifact.ABITag
-							fetchedBuildType = artifact.BuildType
-							fetchedHashID = artifact.HashID
-							fetchedBuildTags = artifact.BuildTags
-						}
-					}
-				} else {
-					for _, abiTag := range abiTags {
-						data, downloadErr = s3client.Download(context.Background(), pkg.Name, pkg.Version, abiTag, buildType, "")
-						if downloadErr == nil {
-							fetchedABITag = abiTag
-							fetchedBuildType = buildType
-							break
-						}
-					}
-				}
-
-				if downloadErr == nil {
-					if err := verifyArtifactHash(data, fetchedHashID); err != nil {
-						return fmt.Errorf("integrity check failed for %s@%s: %w", pkg.Name, pkg.Version, err)
-					}
-					destDir := cache.Path(pkg.Name, pkg.Version, fetchedABITag, fetchedBuildType)
-					if err := os.MkdirAll(destDir, 0o755); err != nil {
-						return fmt.Errorf("create cache dir: %w", err)
-					}
-					if err := pack.ExtractTarZst(data, destDir); err != nil {
-						return fmt.Errorf("extract %s@%s: %w", pkg.Name, pkg.Version, err)
-					}
-
-					if err := indexSuccessfulArtifact(cache, indexedArtifact{
-						Name:       pkg.Name,
-						Version:    pkg.Version,
-						ABITag:     fetchedABITag,
-						BuildType:  fetchedBuildType,
-						HashID:     fetchedHashID,
-						BuildTags:  fetchedBuildTags,
-						InstallDir: destDir,
-						Origin:     "registry",
-					}); err != nil {
-						return err
-					}
-					depPaths[pkg.Name] = destDir
-					if pkg.ABITag != fetchedABITag {
-						pkg.ABITag = fetchedABITag
-						lockDirty = true
-					}
-					cmd.Printf("  [done]  %s@%s (%s) -> %s\n", pkg.Name, pkg.Version, displayBuildType(fetchedBuildType), destDir)
-					continue
-				}
-
-				cmd.Printf("  [warn] prebuilt artifact unavailable for %s@%s, trying source fallback\n", pkg.Name, pkg.Version)
-			}
-
-			if strings.HasPrefix(pkg.Source, "local") && pkg.Path != "" {
-				depPaths[pkg.Name] = pkg.Path
-				cmd.Printf("  [local] %s@%s -> %s\n", pkg.Name, pkg.Version, pkg.Path)
-				continue
-			}
-
-			if !sourceFallback {
-				cmd.Printf("  [skip] %s@%s (source fallback disabled)\n", pkg.Name, pkg.Version)
-				continue
-			}
-
-			ctx, err := ensureInstallCtx()
-			if err != nil {
-				return fmt.Errorf("prepare source fallback for %s@%s: %w", pkg.Name, pkg.Version, err)
-			}
-
-			result, err := installFromRepository(pkg.Name, pkg.Version, repositoryInstallOptions{
-				Context:   ctx,
-				BuildType: buildType,
-				Stdout:    cmd.OutOrStdout(),
-				Stderr:    cmd.ErrOrStderr(),
-			})
-			if err != nil {
-				return fmt.Errorf("source fallback for %s@%s: %w", pkg.Name, pkg.Version, err)
-			}
-
-			depPaths[pkg.Name] = result.InstallDir
-			if pkg.ABITag != result.ABITag {
-				pkg.ABITag = result.ABITag
-				lockDirty = true
-			}
-			if pkg.BuildType != result.BuildType {
-				pkg.BuildType = result.BuildType
-				lockDirty = true
-			}
-			if result.Cached {
-				cmd.Printf("  [cached-source] %s@%s (%s, %s)\n", pkg.Name, result.Version, result.ABITag, result.BuildType)
-			} else {
-				cmd.Printf("  [built] %s@%s (%s) -> %s\n", pkg.Name, result.Version, result.BuildType, result.InstallDir)
-			}
+			fmt.Fprintf(stdout, "  [warn] prebuilt artifact unavailable for %s@%s, trying source fallback\n", pkg.Name, pkg.Version)
 		}
 
-		if lockDirty {
-			if err := resolver.SaveLock(lockPath, lf); err != nil {
-				return fmt.Errorf("save updated lock file: %w", err)
-			}
+		if strings.HasPrefix(pkg.Source, "local") && pkg.Path != "" {
+			depPaths[pkg.Name] = pkg.Path
+			fmt.Fprintf(stdout, "  [local] %s@%s -> %s\n", pkg.Name, pkg.Version, pkg.Path)
+			continue
 		}
 
-		depsDir := filepath.Join(".", "cstow_deps")
-		if err := os.MkdirAll(depsDir, 0o755); err != nil {
-			return err
+		if !sourceFallback {
+			fmt.Fprintf(stdout, "  [skip] %s@%s (source fallback disabled)\n", pkg.Name, pkg.Version)
+			continue
 		}
 
-		var prefixPaths []string
-		for _, pkg := range lf.Packages {
-			src, ok := depPaths[pkg.Name]
-			if !ok {
-				cmd.Printf("  [warn] no dependency path available for %s@%s\n", pkg.Name, pkg.Version)
-				continue
-			}
-			if _, err := os.Stat(src); err != nil {
-				cmd.Printf("  [warn] skip %s@%s: %v\n", pkg.Name, pkg.Version, err)
-				continue
-			}
-
-			dst := filepath.Join(depsDir, pkg.Name)
-			_ = os.Remove(dst)
-			if err := os.Symlink(src, dst); err != nil {
-				cmd.Printf("  [warn] symlink %s: %v\n", pkg.Name, err)
-				continue
-			}
-			prefixPaths = append(prefixPaths, dst)
+		ctx, err := ensureInstallCtx()
+		if err != nil {
+			return fmt.Errorf("prepare source fallback for %s@%s: %w", pkg.Name, pkg.Version, err)
 		}
 
-		if len(prefixPaths) > 0 {
-			cmd.Printf("\n  CMAKE_PREFIX_PATH=%s\n", strings.Join(prefixPaths, string(filepath.ListSeparator)))
+		result, err := installFromRepository(pkg.Name, pkg.Version, repositoryInstallOptions{
+			Context:   ctx,
+			BuildType: buildType,
+			Stdout:    stdout,
+			Stderr:    stderr,
+		})
+		if err != nil {
+			return fmt.Errorf("source fallback for %s@%s: %w", pkg.Name, pkg.Version, err)
 		}
 
-		return nil
-	},
+		depPaths[pkg.Name] = result.InstallDir
+		if pkg.ABITag != result.ABITag {
+			pkg.ABITag = result.ABITag
+			lockDirty = true
+		}
+		if pkg.BuildType != result.BuildType {
+			pkg.BuildType = result.BuildType
+			lockDirty = true
+		}
+		if result.Cached {
+			fmt.Fprintf(stdout, "  [cached-source] %s@%s (%s, %s)\n", pkg.Name, result.Version, result.ABITag, result.BuildType)
+		} else {
+			fmt.Fprintf(stdout, "  [built] %s@%s (%s) -> %s\n", pkg.Name, result.Version, result.BuildType, result.InstallDir)
+		}
+	}
+
+	if lockDirty {
+		if err := resolver.SaveLock(lockPath, lf); err != nil {
+			return fmt.Errorf("save updated lock file: %w", err)
+		}
+	}
+
+	depsDir := filepath.Join(".", "cstow_deps")
+	if err := os.MkdirAll(depsDir, 0o755); err != nil {
+		return err
+	}
+
+	var prefixPaths []string
+	for _, pkg := range lf.Packages {
+		src, ok := depPaths[pkg.Name]
+		if !ok {
+			fmt.Fprintf(stdout, "  [warn] no dependency path available for %s@%s\n", pkg.Name, pkg.Version)
+			continue
+		}
+		if _, err := os.Stat(src); err != nil {
+			fmt.Fprintf(stdout, "  [warn] skip %s@%s: %v\n", pkg.Name, pkg.Version, err)
+			continue
+		}
+
+		dst := filepath.Join(depsDir, pkg.Name)
+		_ = os.Remove(dst)
+		if err := os.Symlink(src, dst); err != nil {
+			fmt.Fprintf(stdout, "  [warn] symlink %s: %v\n", pkg.Name, err)
+			continue
+		}
+		prefixPaths = append(prefixPaths, dst)
+	}
+
+	if len(prefixPaths) > 0 {
+		fmt.Fprintf(stdout, "\n  CMAKE_PREFIX_PATH=%s\n", strings.Join(prefixPaths, string(filepath.ListSeparator)))
+	}
+
+	return nil
 }
 
 func init() {
