@@ -1,0 +1,16 @@
+[package]
+name = "mathlib"
+version = "0.1.0"
+std = "c++17"
+
+[build]
+type = "library"
+sources = ["src/**/*.cpp"]
+include = ["include"]
+
+[profile.debug]
+optimize = "0"
+debug = true
+
+[toolchain]
+compiler = "auto"

@@ -1,0 +1,27 @@
+[package]
+name = "app"
+version = "0.1.0"
+std = "c++17"
+
+[build]
+type = "executable"
+sources = ["src/**/*.cpp"]
+
+[profile.debug]
+optimize = "0"
+debug = true
+
+[toolchain]
+compiler = "auto"
+
+[[dependencies]]
+name = "mathlib"
+version = "0.1.0"
+source = "local"
+path = "../mathlib"
+
+[[dependencies]]
+name = "stringlib"
+version = "0.1.0"
+source = "local"
+path = "../stringlib"

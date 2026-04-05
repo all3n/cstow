@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/all3n/cstow/internal/workspace"
 	"github.com/spf13/cobra"
@@ -34,10 +35,24 @@ var workspaceListCmd = &cobra.Command{
 			return err
 		}
 
+		showGraph, _ := cmd.Flags().GetBool("graph")
+
 		fmt.Printf("Workspace: %s\n", ws.Root)
-		fmt.Printf("Members (%d):\n", len(ws.Members))
-		for _, m := range ws.Members {
-			fmt.Printf("  - %s\n", m)
+
+		if showGraph {
+			order, err := ws.BuildOrder()
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Build order (%d modules):\n", len(order))
+			for i, p := range order {
+				fmt.Printf("  %d. %s\n", i+1, filepath.Base(p))
+			}
+		} else {
+			fmt.Printf("Members (%d):\n", len(ws.Members))
+			for _, m := range ws.Members {
+				fmt.Printf("  - %s\n", m)
+			}
 		}
 		return nil
 	},
@@ -45,7 +60,7 @@ var workspaceListCmd = &cobra.Command{
 
 var workspaceBuildCmd = &cobra.Command{
 	Use:   "build",
-	Short: "Build all workspace members",
+	Short: "Build all workspace members in dependency order",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dir, _ := os.Getwd()
 		ws, err := workspace.Load(dir)
@@ -54,23 +69,29 @@ var workspaceBuildCmd = &cobra.Command{
 		}
 
 		profile, _ := cmd.Flags().GetString("profile")
-		fmt.Printf(">> building workspace (%d members, profile: %s)\n", len(ws.Members), profile)
 
-		for _, member := range ws.Members {
-			fmt.Printf("\n>> building %s\n", member)
-			// Change to member dir and run build
-			err := runBuildInDir(cmd, member)
-			if err != nil {
-				return fmt.Errorf("build %s failed: %w", member, err)
+		// Get build order (also detects cycles)
+		ordered, err := ws.BuildOrder()
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf(">> building workspace (%d modules, profile: %s)\n", len(ordered), profile)
+
+		for i, modulePath := range ordered {
+			fmt.Printf("\n>> [%d/%d] building %s\n", i+1, len(ordered), filepath.Base(modulePath))
+			if err := runBuildInDir(cmd, modulePath); err != nil {
+				return fmt.Errorf("build %s failed: %w", filepath.Base(modulePath), err)
 			}
 		}
 
-		fmt.Println(">> workspace build complete")
+		fmt.Println("\n>> workspace build complete")
 		return nil
 	},
 }
 
 func init() {
+	workspaceListCmd.Flags().Bool("graph", false, "show dependency-aware build order")
 	workspaceCmd.AddCommand(workspaceListCmd)
 	workspaceCmd.AddCommand(workspaceBuildCmd)
 	workspaceBuildCmd.Flags().StringP("profile", "p", "debug", "build profile")

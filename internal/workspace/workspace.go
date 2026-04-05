@@ -66,6 +66,59 @@ func (w *Workspace) MemberPackages() ([]*config.Config, error) {
 	return pkgs, nil
 }
 
+// LoadModules loads each member's config and returns enriched Module entries.
+func (w *Workspace) LoadModules() ([]*Module, error) {
+	var modules []*Module
+	for _, memberPath := range w.Members {
+		cfgPath := filepath.Join(memberPath, "cstow.toml")
+		if _, err := os.Stat(cfgPath); err != nil {
+			continue
+		}
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return nil, fmt.Errorf("load %s: %w", cfgPath, err)
+		}
+		modules = append(modules, &Module{
+			Name: cfg.Package.Name,
+			Path: memberPath,
+			Cfg:  cfg,
+		})
+	}
+	return modules, nil
+}
+
+// BuildOrder returns member paths in dependency order (dependencies first).
+// Returns an error if a cycle is detected.
+func (w *Workspace) BuildOrder() ([]string, error) {
+	modules, err := w.LoadModules()
+	if err != nil {
+		return nil, err
+	}
+	return BuildGraph(modules)
+}
+
+// MergedDependencies returns the combined dependency list for a module,
+// where the module's own declarations override root-level ones by name.
+func (w *Workspace) MergedDependencies(moduleCfg *config.Config) []config.Dependency {
+	seen := make(map[string]bool)
+	var result []config.Dependency
+
+	// Module deps first (higher priority)
+	for _, dep := range moduleCfg.Dependencies {
+		result = append(result, dep)
+		seen[dep.Name] = true
+	}
+
+	// Root deps that are not overridden
+	for _, dep := range w.Config.Dependencies {
+		if !seen[dep.Name] {
+			result = append(result, dep)
+		}
+	}
+
+	return result
+}
+
 // expandMembers expands glob patterns in member list
 func expandMembers(root string, patterns []string) ([]string, error) {
 	var members []string

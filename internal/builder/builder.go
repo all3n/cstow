@@ -84,7 +84,7 @@ func Build(opts Options) (*Result, error) {
 func ValidateInstall(opts Options) error {
 	var missing []string
 
-	// Check libraries
+	// Check libraries (supports glob patterns like "lib/libfoo*.a")
 	for _, lib := range opts.Config.Libs {
 		found := false
 		searchPaths := []string{
@@ -93,7 +93,13 @@ func ValidateInstall(opts Options) error {
 			filepath.Join(opts.InstallDir, lib),
 		}
 		for _, p := range searchPaths {
-			if _, err := os.Stat(p); err == nil {
+			if hasGlob(p) {
+				matches, _ := filepath.Glob(p)
+				if len(matches) > 0 {
+					found = true
+					break
+				}
+			} else if _, err := os.Stat(p); err == nil {
 				found = true
 				break
 			}
@@ -232,4 +238,9 @@ func IsCmakeInstalled() bool {
 // GuessJobs returns a reasonable parallelism level.
 func GuessJobs() int {
 	return runtime.NumCPU()
+}
+
+// hasGlob reports whether a path contains glob metacharacters.
+func hasGlob(path string) bool {
+	return strings.ContainsAny(path, "*?[")
 }

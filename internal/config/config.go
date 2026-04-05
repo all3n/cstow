@@ -57,6 +57,11 @@ type Dependency struct {
 	Rev       string `toml:"rev"`
 }
 
+// IsLocal returns true if this dependency uses a local source path.
+func (d Dependency) IsLocal() bool {
+	return d.Source == "local"
+}
+
 type Registry struct {
 	Name        string `toml:"name"`
 	URL         string `toml:"url"`

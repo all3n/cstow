@@ -1,0 +1,21 @@
+[package]
+name = "hello-cstow"
+version = "0.1.0"
+std = "c++17"
+authors = []
+
+[build]
+type = "executable"
+sources = ["src/**/*.cpp"]
+include = ["include"]
+
+[profile.debug]
+optimize = "0"
+debug = true
+
+[profile.release]
+optimize = "3"
+lto = true
+
+[toolchain]
+compiler = "auto"

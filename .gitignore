@@ -4,3 +4,4 @@ env.local.sh
 .claude/settings.local.json 
 .claude/ralph-loop.local.md
 /tmp
+cstow.lock
