@@ -40,9 +40,12 @@ Use targeted package tests while iterating (`go test ./internal/registry/...`), 
 ## Code Map
 
 - `cmd/`
-  - Commands: `init`, `build`, `add`, `fetch`, `publish`, `install`, `migrate`, `ci`, `workspace`, `check-abi`, `artifact`
+  - Commands: `init`, `build`, `add`, `fetch`, `publish`, `install`, `migrate`, `ci`, `workspace`, `check-abi`, `artifact`, `search`, `gen`, `clean`
   - `fetch.go` — downloads prebuilt artifacts, uses manifest metadata for ABI/build_type matching, falls back to source builds (git or repository), and indexes outcomes in artifact DB.
-  - `deps.go` — builds repository packages and git sources from source, and indexes results in artifact DB.
+  - `deps.go` — builds repository packages and git sources from source, and indexes results in artifact DB. Handles shared dependency propagation (`ForceShared` for `-fPIC`).
+  - `search.go` — searches repository paths for packages by name.
+  - `gen.go` — generates `CMakeLists.txt` and `CMakePresets.json` for workspace projects.
+  - `clean.go` — cleans build artifacts.
   - `artifact.go` — exposes artifact list/sync/show commands; SQLite is a query index over the cache.
 - `internal/config/`
   - Project config (`cstow.toml`) and user config (`~/.cstow/config.toml`)
@@ -59,11 +62,13 @@ Use targeted package tests while iterating (`go test ./internal/registry/...`), 
 - `internal/artifactdb/`
   - Local SQLite artifact index (`~/.cstow/cstow.db`): store, upsert, list, sync, hash_id lookup
 - `internal/repository/`
-  - Repository package definitions, version lookup, layered build config merge, source fetch (git/archive)
+  - Repository package definitions, version lookup, layered build config merge, source fetch (git/archive), package search
 - `internal/builder/`
-  - Source build/install execution (CMake: static/shared/header-only), patch application
+  - Source build/install execution (CMake: static/shared/header-only), patch application, debug/shared library validation
+- `internal/cmakegen/`
+  - `CMakeLists.txt` and `CMakePresets.json` generation for workspace projects
 - `internal/workspace/`
-  - Workspace root discovery and member expansion, topological sort
+  - Workspace root discovery, member expansion, topological sort, parallel scheduler
 - `internal/hooks/`
   - Shell hook runner for lifecycle scripts
 - `internal/legacy/`
@@ -91,12 +96,15 @@ publish  → pack → registry (S3) + artifactdb index
 Follow the code as it exists today, not design docs. Key capabilities:
 
 - `add` supports `--source registry|git|local|repository`. Git source supports `--git-url`, `--tag`, and `--cmake-define`.
-- `build` supports `--fetch` for automatic dependency补全.
+- `build` supports `--fetch` for automatic dependency resolution.
 - `fetch` supports manifest-based ABI/build_type matching, hash-based direct fetch (`--artifact`), and source-build fallback (git/archive/repository).
-- `install` supports git sources and repository recipes with recursive dependency resolution.
+- `install` supports git sources and repository recipes with recursive dependency resolution. Shared deps propagate `-fPIC` transitively.
 - `publish` populates `hash_id` and `build_tags` metadata in manifests.
+- `search` scans repository paths for packages by name.
+- `gen` generates `CMakeLists.txt` and `CMakePresets.json` for workspace projects.
+- Repository paths support project-level `.cstow/repository/` with highest priority.
 - `internal/repository/source.go` supports both `git` and `archive` (.tar.gz, .zip) sources.
-- `internal/builder/` supports CMake only, handles patch application before build.
+- `internal/builder/` supports CMake only, handles patch application before build, validates debug/shared library variants.
 - Workspace supports topological build order and parallel building (`--jobs`).
 - Local artifact DB (`~/.cstow/cstow.db`) indexes all successful builds and fetches.
 
@@ -114,6 +122,9 @@ cstow publish --version <ver>        # required for local-artifact mode
 cstow add --build-type static|shared # set dependency build type
 cstow build --profile debug|release  # build profile (default: debug)
 cstow build --toolchain auto|gcc|clang  # compiler selection
+cstow search <query>                 # search repository packages by name
+cstow workspace build --jobs N       # parallel workspace build
+cstow workspace gen                  # generate CMakeLists.txt for workspace
 ```
 
 ## Code Style
@@ -150,3 +161,4 @@ cstow build --toolchain auto|gcc|clang  # compiler selection
 - `docs/superpowers/specs/2026-03-31-repository-system-design.md`
 - `docs/superpowers/specs/2026-04-01-repository-core-design.md`
 - `docs/superpowers/plans/2026-04-01-repository-core.md`
+- `docs/superpowers/plans/2026-04-05-workspace-parallel-build.md`

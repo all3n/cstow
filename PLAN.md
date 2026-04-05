@@ -1,6 +1,6 @@
 # cstow 路线图
 
-更新时间：2026-04-05
+更新时间：2026-04-06
 
 这份计划不再沿用旧版“Phase 1-7 全部完成”的写法，而是按当前代码现实拆成三类内容：
 
@@ -14,18 +14,23 @@
 
 ### 1. 已落地能力
 
-- CLI 已具备基础命令：`init`、`build`、`add`、`fetch`、`publish`、`install`、`migrate`、`ci`、`workspace`、`checkabi`、`artifact`
+- CLI 已具备基础命令：`init`、`build`、`add`、`fetch`、`publish`、`install`、`migrate`、`ci`、`workspace`、`checkabi`、`artifact`、`search`、`gen`、`clean`
 - `cstow.toml` 解析已支持项目配置、workspace、hooks 等字段，支持 git 源码依赖配置（`cmake` 选项）
 - `~/.cstow/config.toml` 全局配置已支持 repository 路径、缓存、工具链偏好等基础能力
 - 工具链检测和 ABI 计算已可用
 - `cstow.lock` 已记录 dependency `build_type` 和 `abi_tag`，支持 `git` 和 `local` 来源
 - S3/R2/MinIO 风格 registry 的上传、下载、manifest 读写已具备，支持 `hash_id` 和 `build_tags` 索引
-- `internal/repository/` 已实现 package definition、版本匹配、override 加载、merge 逻辑
+- `internal/repository/` 已实现 package definition、版本匹配、override 加载、merge 逻辑、包搜索
 - `cstow install` / `cstow fetch` 已支持 repository recipe 和 Git 仓库的源码构建路径
+- `cstow search <query>` 已支持在 repository 路径中按名称搜索包
+- Repository 路径支持项目级 `.cstow/repository/`（最高优先级）
+- 共享依赖自动传播 `-fPIC`（transitive `ForceShared`）
 - `archive` 源码拉取和解包已支持 `.tar.gz`、`.zip` 和系统 `tar` 格式
 - 源码构建前已支持自动应用版本特定的 `patch` 补丁
 - `artifact list` / `artifact sync` / `artifact show <hashid>` 已可用，基于 SQLite 索引
-- `workspace` 已支持基于拓扑排序的顺序构建
+- `workspace` 已支持基于拓扑排序的顺序构建和并行调度 (`--jobs`)
+- `cstow gen` 已支持为 workspace 项目生成 `CMakeLists.txt` 和 `CMakePresets.json`
+- Builder 已支持 debug profile 库名校验（`d` 后缀）和 shared 库变体搜索
 
 ### 2. 已实现但未闭环
 
@@ -33,8 +38,9 @@
 
 - `build` 命令对项目 `build.defines`、`build.sources` 的深度利用还不够，目前主要依赖原生 CMake
 - `install` 虽然会递归构建依赖，但在极其复杂的循环依赖场景下可能还欠缺健壮性
-- workspace 目前是串行构建，没有并行调度，且 lock/cache 共享逻辑可以进一步优化
+- workspace 的 lock/cache 共享逻辑可以进一步优化
 - `migrate` 生成结果仍需人工微调
+- `cstow gen` 生成的 CMake 文件仍较基础，需要更多项目验证
 
 ### 3. 当前不建议继续扩张的方向
 

@@ -1,6 +1,6 @@
 # cstow Repository 系统说明
 
-更新时间：2026-04-04
+更新时间：2026-04-06
 
 > **⚠️ 核心开发准则**：代码的开发和演进必须无条件服从 `AGENTS.md` (主 PROMPT) 的约定，严格执行**每次功能迭代都是 MVP (最小可行性产品) 且必须可测试**的原则。**严禁碎片化提交，请在完整测好功能后再一次性提交。**
 
@@ -36,30 +36,35 @@
 
 ### 2. `repository`
 
-`repository` 用来存放 **源码构建 recipe**，也就是“这个 C++ 包该怎么拉源码、怎么配 CMake、怎么按平台/编译器做覆盖”。
+`repository` 用来存放 **源码构建 recipe**，也就是”这个 C++ 包该怎么拉源码、怎么配 CMake、怎么按平台/编译器做覆盖”。
 
 当前相关命令：
 
 - `cstow install`
+- `cstow search <query>`
 
 核心实现：
 
 - `internal/repository/`
 - `internal/builder/`
 
-### 3. 当前两条路径还没有打通
+### 3. `git flow`
 
-这点必须明确。
+`git flow` 用来直接声明 Git 仓库依赖，在 `cstow.toml` 中配置 CMake 构建选项。
 
-- `cstow add` 目前不会校验 dependency 是否存在于 repository
-- `cstow fetch` 会优先走 registry；缺失时可回退到 repository recipe 的源码构建
-- `cstow build` 只会消费 `./cstow_deps`，不会自动查 repository 或自动把 `install` 结果接进项目构建
-- `cstow install` 目前只是“把某个 recipe 包构建到本地 cache”，不会自动改项目依赖、不会自动写 `cstow.lock`、也不会自动生成 `cstow_deps` 链接
+当前相关命令：
 
-所以今天的 repository 系统更准确地说是：
+- `cstow add --source git --git-url <url> --tag <tag>`
+- `cstow fetch` (git source fallback)
 
-- 已有独立 MVP
-- 但尚未成为项目依赖流里的自动 fallback
+### 4. 三条路径已打通
+
+当前三条依赖获取路径已连通：
+
+- `cstow add` 会校验 dependency 是否存在于 registry 或 repository（git 源码跳过校验）
+- `cstow fetch` 优先走 registry 预编译包；缺失时回退到 git source 或 repository recipe 源码构建
+- `cstow build --fetch` 可以自动补全缺失依赖
+- `cstow install` 支持递归构建 recipe 依赖，共享依赖会自动传播 `-fPIC`
 
 ## 二、当前命令关系
 
@@ -73,9 +78,9 @@
 
 含义分别是：
 
-- `add`：修改 `cstow.toml` 并生成/更新 `cstow.lock`，可通过 `--build-type` 写入 dependency 的目标产物类型
-- `fetch`：优先从 registry 下载预编译包到 cache，缺失时可回退到 repository recipe 源码构建，并在项目下生成 `./cstow_deps/<pkg>` 符号链接
-- `build`：运行项目自身的 CMake，并把 `cstow_deps` 注入到 `CMAKE_PREFIX_PATH`
+- `add`：修改 `cstow.toml` 并生成/更新 `cstow.lock`，可通过 `--source` 指定来源 (`registry|git|local|repository`)，通过 `--build-type` 写入 dependency 的目标产物类型。Git 源码支持 `--git-url`、`--tag`、`--cmake-define`。
+- `fetch`：优先从 registry 下载预编译包到 cache，缺失时可回退到 git source 或 repository recipe 源码构建，并在项目下生成 `./cstow_deps/<pkg>` 符号链接
+- `build`：运行项目自身的 CMake，并把 `cstow_deps` 注入到 `CMAKE_PREFIX_PATH`。支持 `--fetch` 自动补全缺失依赖
 
 ### 2. repository recipe 路径
 
@@ -85,12 +90,15 @@
 
 含义：
 
-- 从 `~/.cstow/config.toml` 读取 repository 搜索路径
+- 从 `~/.cstow/config.toml` 读取 repository 搜索路径（支持项目级 `.cstow/repository/` 最高优先级）
 - 查找 `package.toml` 和可选的 `versions/<ver>.toml`
 - 合并 build 配置
-- 拉源码
+- 递归处理 recipe 自身依赖（共享依赖自动传播 `-fPIC`）
+- 拉源码（git / archive）
+- 应用版本特定的 patch
 - 本地构建
 - 安装到 `~/.cstow/cache/<name>/<version>/<abi_tag>/<build_type>/`
+- 索引到本地 artifact DB (`~/.cstow/cstow.db`)
 
 ### 3. publish 的两种当前模式
 
@@ -221,9 +229,10 @@ retries = 5
 
 `Finder` 的搜索顺序是：
 
-1. `~/.cstow/config.toml` 中声明的 `repositories`
-2. 按 `priority` 从小到大排序
-3. 最后追加内置 fallback：`~/.cstow/repository`
+1. 项目级仓库 `<project>/.cstow/repository/`（最高优先级，如存在）
+2. `~/.cstow/config.toml` 中声明的 `repositories`
+3. 按 `priority` 从小到大排序
+4. 最后追加内置 fallback：`~/.cstow/repository`
 
 一旦在更高优先级仓库中找到匹配版本，就不会继续往后查找。
 
@@ -300,7 +309,7 @@ build_type = "shared"
 - `cstow add --build-type <kind>` 会把 dependency 的目标类型写入 `cstow.toml` 和 `cstow.lock`
 - `cstow install --type <kind>` 会覆盖 recipe 默认 `build.type`；当前实现里这个显式覆盖也会压过 recipe 中的 `BUILD_SHARED_LIBS=...` define
 - `[[dependencies]].build_type` 当前会进入 `cstow.lock`，并用于区分 `fetch` / `install` / cache 路径 / registry artifact key
-- `[[dependencies]]` 可以被解析，但 `cstow install` 还不会递归安装这些 recipe 依赖
+- `[[dependencies]]` 已支持递归安装，`cstow install` 会自动构建 recipe 的传递依赖
 
 ### `source` 字段当前状态
 
@@ -315,11 +324,13 @@ build_type = "shared"
 - `include_dirs`
   - 对 `header-only` 安装路径有实际作用
 - `libs`
-  - 当前主要是元数据，还没有进入完整的安装校验流程
+  - 已进入安装校验流程，`builder.ValidateInstall` 会检查声明的库文件是否存在
+  - 支持 debug profile 的 `d` 后缀变体（如 `libprotobufd.a`）
+  - 支持 shared 构建时搜索 `.so` / `.dylib` 变体
 
 ### `install_targets` 字段当前状态
 
-已经被解析，但 `internal/builder/` 还没有用它来做目标级安装或安装结果校验。
+已被解析并用于安装结果校验。
 
 ## 六、版本覆盖：`versions/<version>.toml`
 
@@ -369,7 +380,7 @@ cxx_flags = ["-Wno-unused-private-field"]
 `Finder.Find(name, versionConstraint)` 的行为：
 
 1. 根据包名首字母定位子目录
-2. 按 repository 搜索顺序查找 `package.toml`
+2. 按 repository 搜索顺序查找 `package.toml`（项目级仓库优先）
 3. 使用 semver 选择满足约束的最高版本
 4. 如果存在 `versions/<matched>.toml`，一并加载
 5. 返回：
@@ -377,6 +388,15 @@ cxx_flags = ["-Wno-unused-private-field"]
    - 解析后的具体版本号
    - 可选 `VersionOverride`
    - 命中的 repository 根路径
+
+`Finder.Search(query)` 的行为：
+
+1. 扫描所有 repository 路径（项目级优先）
+2. 按包名过滤（模糊匹配，不区分大小写）
+3. 去重（同名包取第一个匹配的仓库）
+4. 返回包名、描述、最新版本、匹配的仓库路径
+
+CLI: `cstow search <query>`（传空字符串列出所有包）
 
 ### 版本选择规则
 
@@ -419,14 +439,16 @@ type MergedBuildConfig struct {
   - 作为 `CMAKE_EXE_LINKER_FLAGS` / `CMAKE_SHARED_LINKER_FLAGS` / `CMAKE_MODULE_LINKER_FLAGS` 传给当前 CMake configure
 - `IncludeDirs`
   - 仅 header-only 路径使用
+- `Patch`
+  - 源码构建前自动应用版本特定的 patch
+- `Libs`
+  - 安装后校验声明的库文件是否存在
+- `install_targets`
+  - 安装后校验目标是否与安装结果一致
 
 ### 当前还没有完整进入构建路径的部分
 
-- `Patch`
-- `Libs`
-- `install_targets`
-
-也就是说，Merge 算出来的 `CXXFlags` / `LinkFlags` 已经会进当前 CMake 安装链路，但 `Patch`、`Libs`、`install_targets` 还没有进入完整的安装校验闭环。
+暂无 — 所有 Merge 输出字段均已接入构建链路。
 
 ## 九、`cstow install` 当前工作流
 
@@ -452,13 +474,15 @@ cstow install fmt@^10
 - `build.type = "static"` / `"shared"` 会切换 `BUILD_SHARED_LIBS`
 - `cstow install --type shared|static` 会优先于 recipe 自带的 `BUILD_SHARED_LIBS=...` define
 - merged `CXXFlags` / `LinkFlags` 会传给当前 CMake configure
+- 源码构建前自动应用版本特定的 patch
+- 安装后校验 `libs` 文件存在（支持 debug profile `d` 后缀和 shared `.so`/`.dylib` 变体）
+- 递归构建 recipe 依赖，共享依赖自动传播 `-fPIC`（transitive `ForceShared`）
 - `header-only` 复制 `include_dirs`
 - `cmd/install` 的集成测试已覆盖本地 static / shared 库安装，以及同 ABI 下 static / shared 分目录共存（见 `cmd/install_integration_test.go`）
 
 ### 当前 builder 还不支持或未打通的部分
 
 - `make` / `autoconf` / `meson` / `custom`
-- 根据 `install_targets` 或 `artifacts.libs` 做安装验证
 - 将 `install` 结果自动接入项目的 `cstow_deps`
 
 ## 十、cache / lock / registry 的 `build_type`
@@ -493,15 +517,15 @@ cstow install fmt@^10
 
 截至现在，最准确的理解方式是：
 
-- `repository` 已经具备 recipe 数据模型、查找、版本覆盖、基础 merge 和源码构建入口
-- 它适合用来验证 package recipe、做本地源码安装原型
-- 它还不是项目依赖管理主路径中的“自动透明 fallback”
+- `repository` 已具备完整的 recipe 数据模型、查找、版本覆盖、merge、递归依赖、patch 应用和源码构建
+- 它已作为项目依赖管理主路径中的自动 fallback（`fetch` 预编译缺失时回退到 repository 源码构建）
+- 支持项目级仓库 (`<project>/.cstow/repository/`)、全局仓库和包搜索
 
 所以如果你要继续推进这个系统，优先级应该是：
 
-1. 打通 `add` / `fetch` / `build` 和 `install` 之间的关系
-2. 让 patch、archive、recipe 依赖递归真正生效
-3. 把 merged flags 和 artifact 校验真正接进 builder
+1. 优化 workspace 下的共享 lock / cache 逻辑
+2. 实现 cache 清理策略
+3. 支持更多构建后端 (Meson 等)
 
 ## 十二、`hash_id` / `build_tags` 与按哈希操作
 
