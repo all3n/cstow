@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/all3n/cstow/internal/cmakegen"
+	"github.com/all3n/cstow/internal/config"
 	"github.com/all3n/cstow/internal/workspace"
 	"github.com/spf13/cobra"
 )
@@ -144,6 +146,91 @@ var workspaceCleanCmd = &cobra.Command{
 	},
 }
 
+var workspaceGenCmd = &cobra.Command{
+	Use:   "gen",
+	Short: "Generate CMake files for all workspace members",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dir, _ := os.Getwd()
+		ws, err := workspace.Load(dir)
+		if err != nil {
+			return err
+		}
+
+		genCMakeLists, _ := cmd.Flags().GetBool("cmakelists")
+		genPresets, _ := cmd.Flags().GetBool("presets")
+		force, _ := cmd.Flags().GetBool("force")
+
+		order, err := ws.BuildOrder()
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf(">> generating CMake files for %d workspace members\n", len(order))
+		for _, memberPath := range order {
+			cfgPath := filepath.Join(memberPath, "cstow.toml")
+			if _, err := os.Stat(cfgPath); err != nil {
+				fmt.Printf("  skipping %s (no cstow.toml)\n", filepath.Base(memberPath))
+				continue
+			}
+
+			cfg, err := config.Load(cfgPath)
+			if err != nil {
+				return fmt.Errorf("load %s: %w", cfgPath, err)
+			}
+
+			// Discover deps from member's cstow_deps/
+			var deps []cmakegen.DepTarget
+			depsDir := filepath.Join(memberPath, "cstow_deps")
+			if entries, derr := os.ReadDir(depsDir); derr == nil && len(entries) > 0 {
+				deps, _ = cmakegen.DiscoverDeps(depsDir)
+			}
+
+			buildType := cfg.Build.Type
+			if buildType == "" {
+				buildType = "executable"
+			}
+
+			opts := cmakegen.GenerateOptions{
+				Name:      cfg.Package.Name,
+				Type:      buildType,
+				Std:       cfg.Package.Std,
+				Sources:   cfg.Build.Sources,
+				Include:   cfg.Build.Include,
+				Defines:   cfg.Build.Defines,
+				Deps:      deps,
+				Profiles:  cfg.Profiles,
+				Toolchain: cfg.Toolchain,
+			}
+
+			if genCMakeLists {
+				content := cmakegen.GenerateCMakeLists(opts)
+				target := filepath.Join(memberPath, "CMakeLists.txt")
+				if err := writeFile(target, content, force); err != nil {
+					fmt.Printf("  skip %s: %s\n", filepath.Base(memberPath), err)
+				} else {
+					fmt.Printf("  generated CMakeLists.txt for %s\n", cfg.Package.Name)
+				}
+			}
+
+			if genPresets {
+				content, gerr := cmakegen.GeneratePresets(opts)
+				if gerr != nil {
+					return fmt.Errorf("generate presets for %s: %w", cfg.Package.Name, gerr)
+				}
+				target := filepath.Join(memberPath, "CMakePresets.json")
+				if err := writeFile(target, content, force); err != nil {
+					fmt.Printf("  skip %s: %s\n", filepath.Base(memberPath), err)
+				} else {
+					fmt.Printf("  generated CMakePresets.json for %s\n", cfg.Package.Name)
+				}
+			}
+		}
+
+		fmt.Println(">> workspace gen complete")
+		return nil
+	},
+}
+
 func init() {
 	workspaceListCmd.Flags().Bool("graph", false, "show dependency-aware build order")
 	workspaceCmd.AddCommand(workspaceListCmd)
@@ -152,5 +239,9 @@ func init() {
 	workspaceBuildCmd.Flags().StringP("profile", "p", "debug", "build profile")
 	workspaceBuildCmd.Flags().Bool("fetch", false, "automatically fetch missing dependencies before building")
 	workspaceBuildCmd.Flags().IntP("jobs", "j", 1, "number of parallel build jobs")
+	workspaceGenCmd.Flags().Bool("cmakelists", true, "generate CMakeLists.txt")
+	workspaceGenCmd.Flags().Bool("presets", true, "generate CMakePresets.json")
+	workspaceGenCmd.Flags().Bool("force", false, "overwrite existing files")
+	workspaceCmd.AddCommand(workspaceGenCmd)
 	rootCmd.AddCommand(workspaceCmd)
 }
