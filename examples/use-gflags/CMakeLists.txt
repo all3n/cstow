@@ -9,5 +9,5 @@ add_executable(use-gflags ${SOURCES})
 target_include_directories(${PROJECT_NAME} PUBLIC include)
 
 # Find gflags from cstow_deps
-find_package(gflags REQUIRED NO_DEFAULT_PATH)
-target_link_libraries(use-gflags PRIVATE gflags)
+find_package(gflags REQUIRED COMPONENTS static)
+target_link_libraries(use-gflags PRIVATE gflags_static)

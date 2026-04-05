@@ -9,15 +9,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// runBuildInDir runs the build command logic in the given working directory.
-// This avoids os.Chdir which is not goroutine-safe.
-func runBuildInDir(cmd *cobra.Command, workDir string) error {
+// runBuildInDir changes to workDir and executes the build command.
+func runBuildInDir(workDir string, autoFetch bool) error {
 	origDir, _ := os.Getwd()
 	if err := os.Chdir(workDir); err != nil {
 		return fmt.Errorf("chdir to %s: %w", workDir, err)
 	}
 	defer os.Chdir(origDir)
-	return buildCmd.RunE(cmd, []string{})
+
+	// Propagate autoFetch to buildCmd flags
+	if autoFetch {
+		buildCmd.Flags().Set("fetch", "true")
+	}
+
+	return buildCmd.RunE(buildCmd, []string{})
 }
 
 var workspaceCmd = &cobra.Command{
@@ -69,6 +74,7 @@ var workspaceBuildCmd = &cobra.Command{
 		}
 
 		profile, _ := cmd.Flags().GetString("profile")
+		autoFetch, _ := cmd.Flags().GetBool("fetch")
 
 		// Get build order (also detects cycles)
 		ordered, err := ws.BuildOrder()
@@ -80,7 +86,7 @@ var workspaceBuildCmd = &cobra.Command{
 
 		for i, modulePath := range ordered {
 			fmt.Printf("\n>> [%d/%d] building %s\n", i+1, len(ordered), filepath.Base(modulePath))
-			if err := runBuildInDir(cmd, modulePath); err != nil {
+			if err := runBuildInDir(modulePath, autoFetch); err != nil {
 				return fmt.Errorf("build %s failed: %w", filepath.Base(modulePath), err)
 			}
 		}
@@ -90,10 +96,36 @@ var workspaceBuildCmd = &cobra.Command{
 	},
 }
 
+var workspaceCleanCmd = &cobra.Command{
+	Use:   "clean",
+	Short: "Clean all workspace member build artifacts",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dir, _ := os.Getwd()
+		ws, err := workspace.Load(dir)
+		if err != nil {
+			return err
+		}
+
+		ordered, err := ws.BuildOrder()
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf(">> cleaning workspace (%d modules)\n", len(ordered))
+		for _, modulePath := range ordered {
+			fmt.Printf("  cleaning %s\n", filepath.Base(modulePath))
+			cleanProjectDir(modulePath, false)
+		}
+		return nil
+	},
+}
+
 func init() {
 	workspaceListCmd.Flags().Bool("graph", false, "show dependency-aware build order")
 	workspaceCmd.AddCommand(workspaceListCmd)
 	workspaceCmd.AddCommand(workspaceBuildCmd)
+	workspaceCmd.AddCommand(workspaceCleanCmd)
 	workspaceBuildCmd.Flags().StringP("profile", "p", "debug", "build profile")
+	workspaceBuildCmd.Flags().Bool("fetch", false, "automatically fetch missing dependencies before building")
 	rootCmd.AddCommand(workspaceCmd)
 }

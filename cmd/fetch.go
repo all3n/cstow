@@ -278,7 +278,12 @@ func runFetch(cfg *config.Config, profile, toolchainName string, sourceFallback 
 
 		dst := filepath.Join(depsDir, pkg.Name)
 		_ = os.Remove(dst)
-		if err := os.Symlink(src, dst); err != nil {
+		// Compute symlink target relative to depsDir so the link resolves correctly
+		linkTarget := src
+		if rel, err := filepath.Rel(depsDir, src); err == nil {
+			linkTarget = rel
+		}
+		if err := os.Symlink(linkTarget, dst); err != nil {
 			fmt.Fprintf(stdout, "  [warn] symlink %s: %v\n", pkg.Name, err)
 			continue
 		}
