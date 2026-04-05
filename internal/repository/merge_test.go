@@ -213,20 +213,28 @@ func TestMerge_LinkFlagsBaseOnly(t *testing.T) {
 	assert.Equal(t, []string{"-lpthread"}, got.LinkFlags)
 }
 
-func TestMerge_VersionOverrideReplacesLinkFlags(t *testing.T) {
+func TestMerge_Automake(t *testing.T) {
 	pkg := &PackageDef{
 		Build: BuildDef{
-			System: "cmake",
-			CMake: CMakeBuildDef{
-				LinkFlags: []string{"-lold"},
+			System: "automake",
+			Automake: AutomakeBuildDef{
+				Args:     []string{"--enable-foo"},
+				CXXFlags: []string{"-Wall"},
 			},
 		},
 	}
+	got := Merge(pkg, nil, "gcc", "debug", "linux")
+	assert.Equal(t, "automake", got.System)
+	assert.Equal(t, []string{"--enable-foo"}, got.AutomakeArgs)
+	assert.Equal(t, []string{"-Wall"}, got.CXXFlags)
+
 	ver := &VersionOverride{
 		Build: &BuildOverride{
-			CMake: &CMakeBuildDef{LinkFlags: []string{"-lnew"}},
+			Automake: &AutomakeBuildDef{
+				Args: []string{"--disable-foo"},
+			},
 		},
 	}
-	got := Merge(pkg, ver, "gcc", "debug", "linux")
-	assert.Equal(t, []string{"-lnew"}, got.LinkFlags)
+	got2 := Merge(pkg, ver, "gcc", "debug", "linux")
+	assert.Equal(t, []string{"--disable-foo"}, got2.AutomakeArgs)
 }

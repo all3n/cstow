@@ -27,9 +27,10 @@ type SourceDef struct {
 }
 
 type BuildDef struct {
-	System   string                      `toml:"system"`   // cmake|make|header-only
-	Type     string                      `toml:"type"`     // static|shared|header-only
+	System   string                      `toml:"system"` // cmake|make|automake|header-only
+	Type     string                      `toml:"type"`   // static|shared|header-only
 	CMake    CMakeBuildDef               `toml:"cmake"`
+	Automake AutomakeBuildDef            `toml:"automake"`
 	Profiles map[string]ProfileOverride  `toml:"profile"`
 	Compiler map[string]CompilerOverride `toml:"compiler"` // gcc|clang|msvc
 	Platform map[string]PlatformOverride `toml:"platform"` // linux|macos|windows
@@ -40,6 +41,12 @@ type CMakeBuildDef struct {
 	CXXFlags       []string `toml:"cxx_flags"`
 	LinkFlags      []string `toml:"link_flags"`
 	InstallTargets []string `toml:"install_targets"`
+}
+
+type AutomakeBuildDef struct {
+	Args      []string `toml:"args"` // Extra args to ./configure
+	CXXFlags  []string `toml:"cxx_flags"`
+	LinkFlags []string `toml:"link_flags"`
 }
 
 type ProfileOverride struct {
@@ -77,7 +84,8 @@ type SourceOverride struct {
 }
 
 type BuildOverride struct {
-	Type     string                      `toml:"type"`     // static|shared|header-only (overrides package base)
+	Type     string                      `toml:"type"` // static|shared|header-only (overrides package base)
 	CMake    *CMakeBuildDef              `toml:"cmake"`
+	Automake *AutomakeBuildDef           `toml:"automake"`
 	Compiler map[string]CompilerOverride `toml:"compiler"`
 }

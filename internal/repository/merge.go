@@ -6,6 +6,7 @@ import "slices"
 type MergedBuildConfig struct {
 	System         string
 	CMakeDefines   []string
+	AutomakeArgs   []string
 	CXXFlags       []string
 	LinkFlags      []string
 	IncludeDirs    []string
@@ -37,8 +38,11 @@ func Merge(pkg *PackageDef, ver *VersionOverride, toolchainKind, profile, goos s
 
 	// Layer 1: package base
 	out.CMakeDefines = slices.Clone(pkg.Build.CMake.Defines)
+	out.AutomakeArgs = slices.Clone(pkg.Build.Automake.Args)
 	out.CXXFlags = slices.Clone(pkg.Build.CMake.CXXFlags)
+	out.CXXFlags = append(out.CXXFlags, pkg.Build.Automake.CXXFlags...)
 	out.LinkFlags = slices.Clone(pkg.Build.CMake.LinkFlags)
+	out.LinkFlags = append(out.LinkFlags, pkg.Build.Automake.LinkFlags...)
 
 	// Layer 2: profile
 	if po, ok := pkg.Build.Profiles[profile]; ok {
@@ -74,6 +78,15 @@ func Merge(pkg *PackageDef, ver *VersionOverride, toolchainKind, profile, goos s
 				}
 				if len(ver.Build.CMake.InstallTargets) > 0 {
 					out.InstallTargets = slices.Clone(ver.Build.CMake.InstallTargets)
+				}
+			}
+			if ver.Build.Automake != nil {
+				if len(ver.Build.Automake.Args) > 0 {
+					out.AutomakeArgs = slices.Clone(ver.Build.Automake.Args)
+				}
+				out.CXXFlags = append(out.CXXFlags, ver.Build.Automake.CXXFlags...)
+				if len(ver.Build.Automake.LinkFlags) > 0 {
+					out.LinkFlags = slices.Clone(ver.Build.Automake.LinkFlags)
 				}
 			}
 			if co, ok := ver.Build.Compiler[toolchainKind]; ok {

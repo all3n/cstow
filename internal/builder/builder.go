@@ -31,8 +31,7 @@ type Result struct {
 	InstallDir string
 }
 
-// Build runs cmake configure -> build -> install.
-// For header-only libraries, skips cmake entirely and copies headers.
+// Build runs the appropriate build system (cmake, automake, etc.)
 func Build(opts Options) (*Result, error) {
 	if opts.Config == nil {
 		return nil, fmt.Errorf("build config is required")
@@ -47,16 +46,25 @@ func Build(opts Options) (*Result, error) {
 		opts.Jobs = runtime.NumCPU()
 	}
 
-	if opts.Config.BuildType == "header-only" {
+	switch opts.Config.System {
+	case "header-only":
 		return installHeaderOnly(opts)
+	case "automake":
+		return buildAutomake(opts)
+	case "cmake", "": // default to cmake
+		return buildCmake(opts)
+	default:
+		return nil, fmt.Errorf("unsupported build system: %s", opts.Config.System)
 	}
+}
 
+func buildCmake(opts Options) (*Result, error) {
 	buildDir := filepath.Join(opts.SourcePath, ".cstow-build")
 	if err := os.MkdirAll(buildDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create build dir: %w", err)
 	}
 
-	if err := runCmake(configureArgs(opts, buildDir), opts.Stdout, opts.Stderr); err != nil {
+	if err := runCommand("cmake", configureArgs(opts, buildDir), opts.Stdout, opts.Stderr); err != nil {
 		return nil, fmt.Errorf("cmake configure: %w", err)
 	}
 
@@ -64,13 +72,71 @@ func Build(opts Options) (*Result, error) {
 		"--build", buildDir,
 		"--", fmt.Sprintf("-j%d", opts.Jobs),
 	}
-	if err := runCmake(buildArgs, opts.Stdout, opts.Stderr); err != nil {
+	if err := runCommand("cmake", buildArgs, opts.Stdout, opts.Stderr); err != nil {
 		return nil, fmt.Errorf("cmake build: %w", err)
 	}
 
 	installArgs := []string{"--install", buildDir}
-	if err := runCmake(installArgs, opts.Stdout, opts.Stderr); err != nil {
+	if err := runCommand("cmake", installArgs, opts.Stdout, opts.Stderr); err != nil {
 		return nil, fmt.Errorf("cmake install: %w", err)
+	}
+
+	if err := ValidateInstall(opts); err != nil {
+		return nil, fmt.Errorf("install validation: %w", err)
+	}
+
+	return &Result{InstallDir: opts.InstallDir}, nil
+}
+
+func buildAutomake(opts Options) (*Result, error) {
+	// 1. autogen.sh if exists
+	autogen := filepath.Join(opts.SourcePath, "autogen.sh")
+	if _, err := os.Stat(autogen); err == nil {
+		if err := runCommand(autogen, nil, opts.Stdout, opts.Stderr, opts.SourcePath); err != nil {
+			return nil, fmt.Errorf("autogen.sh: %w", err)
+		}
+	}
+
+	// 2. configure
+	configure := filepath.Join(opts.SourcePath, "configure")
+	if _, err := os.Stat(configure); err != nil {
+		return nil, fmt.Errorf("configure script not found: %s", configure)
+	}
+
+	args := []string{fmt.Sprintf("--prefix=%s", opts.InstallDir)}
+	args = append(args, opts.Config.AutomakeArgs...)
+
+	// Inject toolchain if provided
+	env := os.Environ()
+	if opts.Toolchain != nil {
+		if opts.Toolchain.CC != "" {
+			env = append(env, "CC="+opts.Toolchain.CC)
+		}
+		if opts.Toolchain.CXX != "" {
+			env = append(env, "CXX="+opts.Toolchain.CXX)
+		}
+	}
+
+	// Inject flags
+	if len(opts.Config.CXXFlags) > 0 {
+		env = append(env, "CXXFLAGS="+strings.Join(opts.Config.CXXFlags, " "))
+	}
+	if len(opts.Config.LinkFlags) > 0 {
+		env = append(env, "LDFLAGS="+strings.Join(opts.Config.LinkFlags, " "))
+	}
+
+	if err := runCommandWithEnv(configure, args, env, opts.Stdout, opts.Stderr, opts.SourcePath); err != nil {
+		return nil, fmt.Errorf("configure: %w", err)
+	}
+
+	// 3. make
+	if err := runCommand("make", []string{fmt.Sprintf("-j%d", opts.Jobs)}, opts.Stdout, opts.Stderr, opts.SourcePath); err != nil {
+		return nil, fmt.Errorf("make build: %w", err)
+	}
+
+	// 4. make install
+	if err := runCommand("make", []string{"install"}, opts.Stdout, opts.Stderr, opts.SourcePath); err != nil {
+		return nil, fmt.Errorf("make install: %w", err)
 	}
 
 	if err := ValidateInstall(opts); err != nil {
@@ -237,10 +303,24 @@ func copyDir(src, dst string) error {
 	})
 }
 
-func runCmake(args []string, stdout, stderr io.Writer) error {
-	cmd := exec.Command("cmake", args...)
+func runCommand(name string, args []string, stdout, stderr io.Writer, dir ...string) error {
+	cmd := exec.Command(name, args...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	if len(dir) > 0 {
+		cmd.Dir = dir[0]
+	}
+	return cmd.Run()
+}
+
+func runCommandWithEnv(name string, args []string, env []string, stdout, stderr io.Writer, dir ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cmd.Env = env
+	if len(dir) > 0 {
+		cmd.Dir = dir[0]
+	}
 	return cmd.Run()
 }
 

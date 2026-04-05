@@ -103,12 +103,12 @@
 - 多成员 workspace 可以稳定、高效（并行）构建
 - CI 模板能直接服务当前主路径
 
-## Phase E — 扩展项 (待启动)
+## Phase E — 扩展项 (进行中)
 
-- 更多构建后端支持 (Meson 等)
-- 实现 cache 清理策略 (MaxSizeGB / RetentionDays)
-- Windows/MSVC 的更完整端到端验证
-- 更细粒度的 package authoring / lint / doctor 命令
+- [x] 更多构建后端支持 (Done: Added Automake support)
+- [ ] 实现 cache 清理策略 (MaxSizeGB / RetentionDays)
+- [ ] Windows/MSVC 的更完整端到端验证
+- [ ] 更细粒度的 package authoring / lint / doctor 命令
 
 ## 四、近期建议执行顺序
 
