@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/all3n/cstow/internal/workspace"
 	"github.com/spf13/cobra"
@@ -75,20 +77,42 @@ var workspaceBuildCmd = &cobra.Command{
 
 		profile, _ := cmd.Flags().GetString("profile")
 		autoFetch, _ := cmd.Flags().GetBool("fetch")
+		jobs, _ := cmd.Flags().GetInt("jobs")
 
-		// Get build order (also detects cycles)
-		ordered, err := ws.BuildOrder()
+		modules, err := ws.LoadModules()
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf(">> building workspace (%d modules, profile: %s)\n", len(ordered), profile)
+		g, err := workspace.ComputeGraph(modules)
+		if err != nil {
+			return err
+		}
 
-		for i, modulePath := range ordered {
-			fmt.Printf("\n>> [%d/%d] building %s\n", i+1, len(ordered), filepath.Base(modulePath))
-			if err := runBuildInDir(modulePath, autoFetch); err != nil {
-				return fmt.Errorf("build %s failed: %w", filepath.Base(modulePath), err)
+		fmt.Printf(">> building workspace (%d modules, profile: %s, jobs: %d)\n", len(modules), profile, jobs)
+
+		scheduler := workspace.NewScheduler(g, jobs)
+		var (
+			mu      sync.Mutex
+			count   int
+			total   = len(modules)
+		)
+
+		task := func(ctx context.Context, m *workspace.Module) error {
+			mu.Lock()
+			count++
+			current := count
+			mu.Unlock()
+
+			fmt.Printf("\n>> [%d/%d] building %s\n", current, total, m.Name)
+			if err := runBuildInDir(m.Path, autoFetch); err != nil {
+				return fmt.Errorf("build %s failed: %w", m.Name, err)
 			}
+			return nil
+		}
+
+		if err := scheduler.Run(cmd.Context(), task); err != nil {
+			return err
 		}
 
 		fmt.Println("\n>> workspace build complete")
@@ -127,5 +151,6 @@ func init() {
 	workspaceCmd.AddCommand(workspaceCleanCmd)
 	workspaceBuildCmd.Flags().StringP("profile", "p", "debug", "build profile")
 	workspaceBuildCmd.Flags().Bool("fetch", false, "automatically fetch missing dependencies before building")
+	workspaceBuildCmd.Flags().IntP("jobs", "j", 1, "number of parallel build jobs")
 	rootCmd.AddCommand(workspaceCmd)
 }
