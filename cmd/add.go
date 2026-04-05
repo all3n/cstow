@@ -54,12 +54,44 @@ var addCmd = &cobra.Command{
 			}
 		}
 
+		gitURL, _ := cmd.Flags().GetString("git-url")
+		tag, _ := cmd.Flags().GetString("tag")
+		cmakeDefines, _ := cmd.Flags().GetStringArray("cmake-define")
+		cxxFlags, _ := cmd.Flags().GetString("cxx-flags")
+		linkFlags, _ := cmd.Flags().GetString("link-flags")
+
+		if source == "git" {
+			if gitURL == "" {
+				return fmt.Errorf("--git-url is required when --source is git")
+			}
+			if tag == "" {
+				tag = "main"
+			}
+		}
+
 		// Validate dependency before writing
 		if err := validateDependency(name, version, source); err != nil {
 			return err
 		}
 
-		resolver.AddDependency(cfg, name, version, source, buildType)
+		dep := config.Dependency{
+			Name:      name,
+			Version:   version,
+			Source:    source,
+			BuildType: buildType,
+		}
+		if source == "git" {
+			dep.Git = gitURL
+			dep.Rev = tag
+			if len(cmakeDefines) > 0 || cxxFlags != "" || linkFlags != "" {
+				dep.CMake = config.GitCMake{
+					Defines:   cmakeDefines,
+					CXXFlags:  strings.Fields(cxxFlags),
+					LinkFlags: strings.Fields(linkFlags),
+				}
+			}
+		}
+		resolver.AddDependency(cfg, dep)
 
 		// Resolve first — only persist if resolution succeeds
 		cache := resolver.NewFSCache()
@@ -94,6 +126,9 @@ func parsePackageSpec(spec string) (name, version string) {
 }
 
 func validateDependency(name, version, source string) error {
+	if source == "git" {
+		return nil // git deps are validated by URL reachability, not registry/repo
+	}
 	ctx := context.Background()
 
 	if source == "registry" {
@@ -172,10 +207,20 @@ func resetAddFlagState(cmd *cobra.Command) {
 	}
 	resetAddFlag("source")
 	resetAddFlag("build-type")
+	resetAddFlag("git-url")
+	resetAddFlag("tag")
+	resetAddFlag("cmake-define")
+	resetAddFlag("cxx-flags")
+	resetAddFlag("link-flags")
 }
 
 func init() {
 	addCmd.Flags().String("source", "registry", "dependency source (registry|local|git)")
 	addCmd.Flags().String("build-type", "", "dependency build type (static|shared|header-only)")
+	addCmd.Flags().String("git-url", "", "git repository URL (required when --source is git)")
+	addCmd.Flags().String("tag", "", "git tag or branch to checkout (default: main)")
+	addCmd.Flags().StringArray("cmake-define", nil, "cmake define KEY=VAL (repeatable)")
+	addCmd.Flags().String("cxx-flags", "", "additional C++ compiler flags")
+	addCmd.Flags().String("link-flags", "", "additional linker flags")
 	rootCmd.AddCommand(addCmd)
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/all3n/cstow/internal/config"
 	"github.com/all3n/cstow/internal/pack"
 	"github.com/all3n/cstow/internal/registry"
+	"github.com/all3n/cstow/internal/repository"
 	"github.com/all3n/cstow/internal/resolver"
 	"github.com/spf13/cobra"
 )
@@ -30,6 +31,9 @@ type fetchRegistryClient interface {
 var fetchNewRegistryClient = func(ctx context.Context, reg config.Registry) (fetchRegistryClient, error) {
 	return registry.NewS3Client(ctx, reg)
 }
+
+// fetchGitCloneFunc allows tests to mock git clone operations.
+var fetchGitCloneFunc = repository.FetchGit
 
 var fetchCmd = &cobra.Command{
 	Use:   "fetch",
@@ -140,6 +144,40 @@ func runFetch(cfg *config.Config, profile, toolchainName string, sourceFallback 
 			continue
 		}
 
+		if strings.HasPrefix(pkg.Source, "git:") && pkg.Git != "" {
+			ctx, err := ensureInstallCtx()
+			if err != nil {
+				return fmt.Errorf("prepare git build for %s@%s: %w", pkg.Name, pkg.Version, err)
+			}
+
+			result, err := installFromGitSource(pkg.Name, pkg.Version, pkg.Git, pkg.Rev, gitSourceOptions{
+				Context:   ctx,
+				BuildType: buildType,
+				CMake:     gitCMakeFromLock(cfg, pkg.Name),
+				Stdout:    stdout,
+				Stderr:    stderr,
+			})
+			if err != nil {
+				return fmt.Errorf("git source build for %s@%s: %w", pkg.Name, pkg.Version, err)
+			}
+
+			depPaths[pkg.Name] = result.InstallDir
+			if pkg.ABITag != result.ABITag {
+				pkg.ABITag = result.ABITag
+				lockDirty = true
+			}
+			if pkg.BuildType != result.BuildType {
+				pkg.BuildType = result.BuildType
+				lockDirty = true
+			}
+			if result.Cached {
+				fmt.Fprintf(stdout, "  [cached-git] %s@%s (%s, %s)\n", pkg.Name, result.Version, result.ABITag, result.BuildType)
+			} else {
+				fmt.Fprintf(stdout, "  [built-git] %s@%s (%s) -> %s\n", pkg.Name, result.Version, result.BuildType, result.InstallDir)
+			}
+			continue
+		}
+
 		if s3client != nil && !strings.HasPrefix(pkg.Source, "local") {
 			fmt.Fprintf(stdout, "  [fetch] %s@%s ...\n", pkg.Name, pkg.Version)
 
@@ -182,7 +220,7 @@ func runFetch(cfg *config.Config, profile, toolchainName string, sourceFallback 
 				destDir := cache.Path(pkg.Name, pkg.Version, fetchedABITag, fetchedBuildType)
 				if err := os.MkdirAll(destDir, 0o755); err != nil {
 					return fmt.Errorf("create cache dir: %w", err)
-					}
+				}
 				if err := pack.ExtractTarZst(data, destDir); err != nil {
 					return fmt.Errorf("extract %s@%s: %w", pkg.Name, pkg.Version, err)
 				}

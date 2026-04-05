@@ -170,18 +170,119 @@ func TestFSCacheLegacyFallback(t *testing.T) {
 
 func TestAddDependency(t *testing.T) {
 	cfg := &config.Config{}
-	AddDependency(cfg, "fmt", "^10.0.0", "registry", "shared")
+	AddDependency(cfg, config.Dependency{Name: "fmt", Version: "^10.0.0", Source: "registry", BuildType: "shared"})
 	assert.Equal(t, 1, len(cfg.Dependencies))
 	assert.Equal(t, "fmt", cfg.Dependencies[0].Name)
 	assert.Equal(t, "shared", cfg.Dependencies[0].BuildType)
 
 	// Adding again should not duplicate
-	AddDependency(cfg, "fmt", "^10.0.0", "registry", "shared")
+	AddDependency(cfg, config.Dependency{Name: "fmt", Version: "^10.0.0", Source: "registry", BuildType: "shared"})
 	assert.Equal(t, 1, len(cfg.Dependencies))
 
 	// Different package
-	AddDependency(cfg, "spdlog", "^1.12.0", "registry", "static")
+	AddDependency(cfg, config.Dependency{Name: "spdlog", Version: "^1.12.0", Source: "registry", BuildType: "static"})
 	assert.Equal(t, 2, len(cfg.Dependencies))
+}
+
+func TestResolveGitSource(t *testing.T) {
+	r := New(nil, nil)
+	lf, err := r.Resolve([]config.Dependency{
+		{
+			Name:      "fmt",
+			Version:   "10.2.1",
+			Source:    "git",
+			BuildType: "static",
+			Git:       "https://github.com/fmtlib/fmt.git",
+			Rev:       "10.2.1",
+			CMake: config.GitCMake{
+				Defines:  []string{"BUILD_SHARED_LIBS=OFF"},
+				CXXFlags: []string{"-fPIC"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, lf.Packages, 1)
+	p := lf.Packages[0]
+	assert.Equal(t, "fmt", p.Name)
+	assert.Equal(t, "10.2.1", p.Version)
+	assert.Equal(t, "git:https://github.com/fmtlib/fmt.git", p.Source)
+	assert.Equal(t, "static", p.BuildType)
+	assert.Equal(t, "https://github.com/fmtlib/fmt.git", p.Git)
+	assert.Equal(t, "10.2.1", p.Rev)
+}
+
+func TestResolveGitSourceNoRevDefaultsToMain(t *testing.T) {
+	r := New(nil, nil)
+	lf, err := r.Resolve([]config.Dependency{
+		{
+			Name:    "mylib",
+			Version: "1.0.0",
+			Source:  "git",
+			Git:     "https://github.com/user/mylib.git",
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, lf.Packages, 1)
+	assert.Equal(t, "mylib", lf.Packages[0].Name)
+	assert.Equal(t, "git:https://github.com/user/mylib.git", lf.Packages[0].Source)
+	assert.Equal(t, "https://github.com/user/mylib.git", lf.Packages[0].Git)
+	assert.Equal(t, "", lf.Packages[0].Rev)
+}
+
+func TestAddDependencyGit(t *testing.T) {
+	cfg := &config.Config{}
+	AddDependency(cfg, config.Dependency{
+		Name:      "fmt",
+		Version:   "10.2.1",
+		Source:    "git",
+		BuildType: "static",
+		Git:       "https://github.com/fmtlib/fmt.git",
+		Rev:       "10.2.1",
+		CMake: config.GitCMake{
+			Defines: []string{"BUILD_SHARED_LIBS=OFF"},
+		},
+	})
+	require.Len(t, cfg.Dependencies, 1)
+	assert.Equal(t, "git", cfg.Dependencies[0].Source)
+	assert.Equal(t, "https://github.com/fmtlib/fmt.git", cfg.Dependencies[0].Git)
+	assert.Equal(t, "10.2.1", cfg.Dependencies[0].Rev)
+	assert.Equal(t, []string{"BUILD_SHARED_LIBS=OFF"}, cfg.Dependencies[0].CMake.Defines)
+
+	// Duplicate should not be added
+	AddDependency(cfg, config.Dependency{
+		Name:    "fmt",
+		Version: "10.2.1",
+		Source:  "git",
+		Git:     "https://github.com/fmtlib/fmt.git",
+	})
+	assert.Len(t, cfg.Dependencies, 1)
+}
+
+func TestLockFileGitRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "cstow.lock")
+
+	lf := &LockFile{
+		Version: 1,
+		Packages: []LockEntry{
+			{
+				Name:      "fmt",
+				Version:   "10.2.1",
+				Source:    "git:https://github.com/fmtlib/fmt.git",
+				BuildType: "static",
+				Git:       "https://github.com/fmtlib/fmt.git",
+				Rev:       "10.2.1",
+			},
+		},
+	}
+
+	require.NoError(t, SaveLock(lockPath, lf))
+	loaded, err := LoadLock(lockPath)
+	require.NoError(t, err)
+	require.Len(t, loaded.Packages, 1)
+	assert.Equal(t, "git:https://github.com/fmtlib/fmt.git", loaded.Packages[0].Source)
+	assert.Equal(t, "https://github.com/fmtlib/fmt.git", loaded.Packages[0].Git)
+	assert.Equal(t, "10.2.1", loaded.Packages[0].Rev)
 }
 
 // mock registry

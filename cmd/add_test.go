@@ -196,3 +196,56 @@ func TestAddRejectsInvalidBuildType(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported build type")
 }
+
+func TestAddGitSourcePersistsToConfigAndLock(t *testing.T) {
+	setupAddTest(t)
+
+	rootCmd.SetArgs([]string{"add", "fmt@10.2.1", "--source", "git",
+		"--git-url", "https://github.com/fmtlib/fmt.git",
+		"--tag", "10.2.1",
+		"--build-type", "static",
+		"--cmake-define", "BUILD_SHARED_LIBS=OFF"})
+	require.NoError(t, rootCmd.Execute())
+
+	cfg, err := config.Load("cstow.toml")
+	require.NoError(t, err)
+	require.Len(t, cfg.Dependencies, 1)
+	dep := cfg.Dependencies[0]
+	assert.Equal(t, "git", dep.Source)
+	assert.Equal(t, "https://github.com/fmtlib/fmt.git", dep.Git)
+	assert.Equal(t, "10.2.1", dep.Rev)
+	assert.Equal(t, "static", dep.BuildType)
+	assert.Equal(t, []string{"BUILD_SHARED_LIBS=OFF"}, dep.CMake.Defines)
+
+	lockFile, err := resolver.LoadLock("cstow.lock")
+	require.NoError(t, err)
+	require.Len(t, lockFile.Packages, 1)
+	assert.Equal(t, "git:https://github.com/fmtlib/fmt.git", lockFile.Packages[0].Source)
+	assert.Equal(t, "https://github.com/fmtlib/fmt.git", lockFile.Packages[0].Git)
+	assert.Equal(t, "10.2.1", lockFile.Packages[0].Rev)
+}
+
+func TestAddGitSourceRequiresGitURL(t *testing.T) {
+	setupAddTest(t)
+
+	rootCmd.SetArgs([]string{"add", "mylib", "--source", "git"})
+	err := rootCmd.Execute()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "--git-url is required")
+}
+
+func TestAddGitSourceWithCXXFlags(t *testing.T) {
+	setupAddTest(t)
+
+	rootCmd.SetArgs([]string{"add", "mylib@1.0", "--source", "git",
+		"--git-url", "https://github.com/user/mylib.git",
+		"--cxx-flags", "-fPIC -Wall",
+		"--link-flags", "-lpthread"})
+	require.NoError(t, rootCmd.Execute())
+
+	cfg, err := config.Load("cstow.toml")
+	require.NoError(t, err)
+	require.Len(t, cfg.Dependencies, 1)
+	assert.Equal(t, []string{"-fPIC", "-Wall"}, cfg.Dependencies[0].CMake.CXXFlags)
+	assert.Equal(t, []string{"-lpthread"}, cfg.Dependencies[0].CMake.LinkFlags)
+}

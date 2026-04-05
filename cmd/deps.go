@@ -40,6 +40,22 @@ type repositoryInstallResult struct {
 	Cached     bool
 }
 
+type gitSourceOptions struct {
+	Context   *repositoryInstallContext
+	BuildType string
+	CMake     config.GitCMake
+	Stdout    io.Writer
+	Stderr    io.Writer
+}
+
+type gitSourceResult struct {
+	InstallDir string
+	Version    string
+	ABITag     string
+	BuildType  string
+	Cached     bool
+}
+
 func newRepositoryInstallContext(projectCfg *config.Config, profile, toolchainName string) (*repositoryInstallContext, error) {
 	g, err := config.LoadGlobal()
 	if err != nil {
@@ -226,6 +242,112 @@ func installFromRepository(name, versionConstraint string, opts repositoryInstal
 		BuildType:  buildType,
 		RepoPath:   pkg.RepoPath,
 	}, nil
+}
+
+func installFromGitSource(name, version, gitURL, rev string, opts gitSourceOptions) (*gitSourceResult, error) {
+	if opts.Stdout == nil {
+		opts.Stdout = os.Stdout
+	}
+	if opts.Stderr == nil {
+		opts.Stderr = os.Stderr
+	}
+
+	buildType := normalizeBuildType(opts.BuildType)
+	if buildType == "" {
+		buildType = "static"
+	}
+	if err := validateBuildType(buildType); err != nil {
+		return nil, err
+	}
+
+	abiTag := opts.Context.detectedABITag()
+	cache := resolver.NewFSCache()
+	installDir := cache.Path(name, version, abiTag, buildType)
+
+	if resolvedPath, resolvedABITag, ok := findCachedPackage(cache, name, version, []string{abiTag}, buildType); ok {
+		if err := indexSuccessfulArtifact(cache, indexedArtifact{
+			Name:       name,
+			Version:    version,
+			ABITag:     resolvedABITag,
+			BuildType:  buildType,
+			InstallDir: resolvedPath,
+			Origin:     "git",
+		}); err != nil {
+			return nil, err
+		}
+		return &gitSourceResult{
+			InstallDir: resolvedPath,
+			Version:    version,
+			ABITag:     resolvedABITag,
+			BuildType:  buildType,
+			Cached:     true,
+		}, nil
+	}
+
+	tmpDir, err := os.MkdirTemp("", "cstow-git-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if rev == "" {
+		rev = "main"
+	}
+	if err := fetchGitCloneFunc(gitURL, rev, tmpDir); err != nil {
+		return nil, fmt.Errorf("git clone %s@%s: %w", gitURL, rev, err)
+	}
+
+	merged := &repository.MergedBuildConfig{
+		System:       "cmake",
+		BuildType:    buildType,
+		CMakeDefines: opts.CMake.Defines,
+		CXXFlags:     opts.CMake.CXXFlags,
+		LinkFlags:    opts.CMake.LinkFlags,
+	}
+
+	result, err := builder.Build(builder.Options{
+		SourcePath: tmpDir,
+		InstallDir: installDir,
+		Config:     merged,
+		Toolchain:  opts.Context.Toolchain,
+		Profile:    opts.Context.Profile,
+		Jobs:       builder.GuessJobs(),
+		Stdout:     opts.Stdout,
+		Stderr:     opts.Stderr,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build %s %s: %w", name, version, err)
+	}
+
+	if err := indexSuccessfulArtifact(cache, indexedArtifact{
+		Name:       name,
+		Version:    version,
+		ABITag:     abiTag,
+		BuildType:  buildType,
+		InstallDir: result.InstallDir,
+		Origin:     "git",
+	}); err != nil {
+		return nil, err
+	}
+
+	return &gitSourceResult{
+		InstallDir: result.InstallDir,
+		Version:    version,
+		ABITag:     abiTag,
+		BuildType:  buildType,
+	}, nil
+}
+
+func gitCMakeFromLock(cfg *config.Config, name string) config.GitCMake {
+	if cfg == nil {
+		return config.GitCMake{}
+	}
+	for _, dep := range cfg.Dependencies {
+		if dep.Name == name {
+			return dep.CMake
+		}
+	}
+	return config.GitCMake{}
 }
 
 func candidateABITags(lockTag, detectedTag string) []string {

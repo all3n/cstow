@@ -22,15 +22,30 @@ var installCmd = &cobra.Command{
 		name, versionConstraint := parsePackageSpec(args[0])
 		var projectCfg *config.Config
 		if _, err := os.Stat("cstow.toml"); err == nil {
-			projectCfg, err = config.Load("cstow.toml")
-			if err != nil {
-				return err
+			var loadErr error
+			projectCfg, loadErr = config.Load("cstow.toml")
+			if loadErr != nil {
+				return loadErr
 			}
 		}
 
 		var lockFile *resolver.LockFile
 		if _, err := os.Stat("cstow.lock"); err == nil {
 			lockFile, _ = resolver.LoadLock("cstow.lock")
+		}
+
+		// Check if this package has a git source in cstow.toml
+		var gitURL, gitRev string
+		var gitCMake config.GitCMake
+		if projectCfg != nil {
+			for _, dep := range projectCfg.Dependencies {
+				if dep.Name == name && dep.Source == "git" {
+					gitURL = dep.Git
+					gitRev = dep.Rev
+					gitCMake = dep.CMake
+					break
+				}
+			}
 		}
 
 		if buildType == "" {
@@ -50,6 +65,27 @@ var installCmd = &cobra.Command{
 
 		fmt.Printf(">> toolchain: %s %d.%d.%d | abi: %s\n",
 			ctx.Toolchain.Kind, ctx.Toolchain.Version[0], ctx.Toolchain.Version[1], ctx.Toolchain.Version[2], ctx.detectedABITag())
+
+		if gitURL != "" {
+			effectiveVersion := versionConstraint
+			if effectiveVersion == "*" || effectiveVersion == "" {
+				effectiveVersion = gitRev
+			}
+			result, err := installFromGitSource(name, effectiveVersion, gitURL, gitRev, gitSourceOptions{
+				Context:   ctx,
+				BuildType: buildType,
+				CMake:     gitCMake,
+			})
+			if err != nil {
+				return err
+			}
+			if result.Cached {
+				fmt.Printf(">> already installed: %s\n", result.InstallDir)
+				return nil
+			}
+			fmt.Printf(">> installed %s %s → %s\n", name, result.Version, result.InstallDir)
+			return nil
+		}
 
 		result, err := installFromRepository(name, versionConstraint, repositoryInstallOptions{
 			Context:   ctx,

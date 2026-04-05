@@ -28,6 +28,8 @@ type LockEntry struct {
 	BuildType string   `toml:"build_type,omitempty"`
 	Deps      []string `toml:"deps,omitempty"`
 	Path      string   `toml:"path,omitempty"`
+	Git       string   `toml:"git,omitempty"`
+	Rev       string   `toml:"rev,omitempty"`
 }
 
 // RegistryClient fetches available versions for a package.
@@ -95,6 +97,13 @@ func (r *Resolver) resolveRecursive(deps []config.Dependency, locked map[string]
 		var source string
 
 		switch dep.Source {
+		case "git":
+			// Git source: version is the tag/rev, source records the URL
+			chosenVer = dep.Version
+			if dep.Version == "*" || dep.Version == "" {
+				chosenVer = "0.0.0"
+			}
+			source = "git:" + dep.Git
 		case "local":
 			// For local source, if version looks like a constraint (not a plain semver),
 			// try to parse it; otherwise use as-is
@@ -134,6 +143,8 @@ func (r *Resolver) resolveRecursive(deps []config.Dependency, locked map[string]
 			Source:    source,
 			BuildType: dep.BuildType,
 			Path:      dep.Path,
+			Git:       dep.Git,
+			Rev:       dep.Rev,
 		}
 	}
 	return nil
@@ -188,19 +199,14 @@ func SaveLock(path string, lf *LockFile) error {
 	return enc.Encode(lf)
 }
 
-// AddDependency adds a dependency to cstow.toml and regenerates the lock
-func AddDependency(cfg *config.Config, name, version, source, buildType string) {
+// AddDependency adds a dependency to cstow.toml
+func AddDependency(cfg *config.Config, dep config.Dependency) {
 	for _, d := range cfg.Dependencies {
-		if d.Name == name {
+		if d.Name == dep.Name {
 			return // already present
 		}
 	}
-	cfg.Dependencies = append(cfg.Dependencies, config.Dependency{
-		Name:      name,
-		Version:   version,
-		Source:    source,
-		BuildType: buildType,
-	})
+	cfg.Dependencies = append(cfg.Dependencies, dep)
 }
 
 // FSChunk implements LocalCache using filesystem
