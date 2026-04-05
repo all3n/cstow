@@ -1,10 +1,13 @@
 package cmakegen
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/all3n/cstow/internal/config"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGenerateCMakeLists_ExecutableNoDeps(t *testing.T) {
@@ -130,4 +133,139 @@ func TestGenerateCMakeLists_CMakeMinimumVersion(t *testing.T) {
 	// Always present as first line
 	lines := strings.SplitN(got, "\n", 2)
 	assert.Equal(t, "cmake_minimum_required(VERSION 3.16)", lines[0])
+}
+
+func TestGeneratePresets_DebugAndRelease(t *testing.T) {
+	opts := GenerateOptions{
+		Name: "myapp",
+		Std:  "c++17",
+		Profiles: map[string]config.Profile{
+			"debug":   {Optimize: "0", Debug: true},
+			"release": {Optimize: "3", LTO: true},
+		},
+	}
+	got, err := GeneratePresets(opts)
+	require.NoError(t, err)
+
+	// Valid JSON
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(got), &result))
+
+	// Version 6
+	assert.Equal(t, float64(6), result["version"])
+
+	// Configure presets
+	presets := result["configurePresets"].([]interface{})
+	presetMap := make(map[string]map[string]interface{})
+	for _, p := range presets {
+		pm := p.(map[string]interface{})
+		presetMap[pm["name"].(string)] = pm
+	}
+
+	debugPreset := presetMap["debug"]
+	releasePreset := presetMap["release"]
+	require.NotNil(t, debugPreset)
+	require.NotNil(t, releasePreset)
+
+	assert.Equal(t, "${sourceDir}/build/debug", debugPreset["binaryDir"])
+	assert.Equal(t, "${sourceDir}/build/release", releasePreset["binaryDir"])
+
+	debugCache := debugPreset["cacheVariables"].(map[string]interface{})
+	releaseCache := releasePreset["cacheVariables"].(map[string]interface{})
+
+	assert.Equal(t, "Debug", debugCache["CMAKE_BUILD_TYPE"])
+	assert.Equal(t, "Release", releaseCache["CMAKE_BUILD_TYPE"])
+	assert.Equal(t, "ON", debugCache["CMAKE_EXPORT_COMPILE_COMMANDS"])
+	assert.Equal(t, "ON", releaseCache["CMAKE_EXPORT_COMPILE_COMMANDS"])
+	assert.Equal(t, "17", debugCache["CMAKE_CXX_STANDARD"])
+	assert.Equal(t, "17", releaseCache["CMAKE_CXX_STANDARD"])
+
+	// LTO only on release
+	assert.Nil(t, debugCache["CMAKE_INTERPROCEDURAL_OPTIMIZATION"])
+	assert.Equal(t, "ON", releaseCache["CMAKE_INTERPROCEDURAL_OPTIMIZATION"])
+}
+
+func TestGeneratePresets_DefaultProfiles(t *testing.T) {
+	opts := GenerateOptions{
+		Name:     "myapp",
+		Std:      "c++17",
+		Profiles: map[string]config.Profile{}, // empty
+	}
+	got, err := GeneratePresets(opts)
+	require.NoError(t, err)
+
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(got), &result))
+
+	presets := result["configurePresets"].([]interface{})
+	presetMap := make(map[string]map[string]interface{})
+	for _, p := range presets {
+		pm := p.(map[string]interface{})
+		presetMap[pm["name"].(string)] = pm
+	}
+
+	_, hasDebug := presetMap["debug"]
+	_, hasRelease := presetMap["release"]
+	assert.True(t, hasDebug, "expected default debug preset")
+	assert.True(t, hasRelease, "expected default release preset")
+}
+
+func TestGeneratePresets_WithToolchain(t *testing.T) {
+	opts := GenerateOptions{
+		Name: "myapp",
+		Std:  "c++17",
+		Profiles: map[string]config.Profile{
+			"debug": {Debug: true},
+		},
+		Toolchain: config.Toolchain{Compiler: "clang"},
+	}
+	got, err := GeneratePresets(opts)
+	require.NoError(t, err)
+
+	assert.Contains(t, got, "CMAKE_CXX_COMPILER")
+	assert.Contains(t, got, "clang++")
+}
+
+func TestGeneratePresets_BuildPresets(t *testing.T) {
+	opts := GenerateOptions{
+		Name: "myapp",
+		Std:  "c++17",
+		Profiles: map[string]config.Profile{
+			"debug":   {Debug: true},
+			"release": {Optimize: "3"},
+		},
+	}
+	got, err := GeneratePresets(opts)
+	require.NoError(t, err)
+
+	var result map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(got), &result))
+
+	buildPresets := result["buildPresets"].([]interface{})
+	buildMap := make(map[string]map[string]interface{})
+	for _, p := range buildPresets {
+		pm := p.(map[string]interface{})
+		buildMap[pm["name"].(string)] = pm
+	}
+
+	assert.Equal(t, "debug", buildMap["debug"]["configurePreset"])
+	assert.Equal(t, "release", buildMap["release"]["configurePreset"])
+}
+
+func TestGeneratePresets_ValidJSON(t *testing.T) {
+	opts := GenerateOptions{
+		Name: "myapp",
+		Std:  "c++20",
+		Profiles: map[string]config.Profile{
+			"release": {Optimize: "3", LTO: true},
+		},
+	}
+	got, err := GeneratePresets(opts)
+	require.NoError(t, err)
+
+	var result map[string]interface{}
+	err = json.Unmarshal([]byte(got), &result)
+	assert.NoError(t, err, "output should be valid JSON")
+	assert.Contains(t, got, "\"version\"")
+	assert.Contains(t, got, "\"configurePresets\"")
 }
