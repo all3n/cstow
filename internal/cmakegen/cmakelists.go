@@ -5,21 +5,20 @@ import (
 	"strings"
 )
 
-// GenerateCMakeLists produces a CMakeLists.txt content string from the given
-// options. It follows conventional CMake patterns: cmake_minimum_required,
-// project declaration, C++ standard, target definition, include directories,
-// compile definitions, and dependency linking.
+// GenerateCMakeLists produces a CMakeLists.txt content string from the given options.
 func GenerateCMakeLists(opts GenerateOptions) string {
 	var b strings.Builder
 
 	// 1. CMake minimum version and project declaration.
 	b.WriteString("cmake_minimum_required(VERSION 3.16)\n")
 	b.WriteString(fmt.Sprintf("project(%s LANGUAGES CXX)\n", opts.Name))
+	b.WriteString("\n")
 
 	// 2. C++ standard.
 	stdNum := strings.TrimPrefix(opts.Std, "c++")
 	b.WriteString(fmt.Sprintf("set(CMAKE_CXX_STANDARD %s)\n", stdNum))
 	b.WriteString("set(CMAKE_CXX_STANDARD_REQUIRED ON)\n")
+	b.WriteString("\n")
 
 	// 3. Target definition based on type.
 	visibility := "PUBLIC"
@@ -29,31 +28,16 @@ func GenerateCMakeLists(opts GenerateOptions) string {
 		b.WriteString(fmt.Sprintf("add_library(%s INTERFACE)\n", opts.Name))
 	default:
 		// executable or library
-		if len(opts.Sources) > 0 {
-			nonGlobSources := filterNonGlob(opts.Sources)
-			if len(nonGlobSources) > 0 {
-				b.WriteString(fmt.Sprintf("%s(${SOURCES})\n", targetKeyword(opts)))
-			}
-			for i, s := range opts.Sources {
-				if strings.Contains(s, "*") {
-					b.WriteString(fmt.Sprintf("file(GLOB_RECURSE SRC%d %s)\n", i, s))
-					b.WriteString("list(APPEND SOURCES ${SRC" + fmt.Sprintf("%d", i) + "})\n")
-				} else {
-					b.WriteString(fmt.Sprintf("list(APPEND SOURCES %s)\n", s))
-				}
-			}
-			b.WriteString(fmt.Sprintf("%s(${SOURCES})\n", targetKeyword(opts)))
+		b.WriteString("file(GLOB_RECURSE SOURCES src/*.cpp)\n")
+		if opts.Type == "executable" {
+			b.WriteString(fmt.Sprintf("add_executable(%s ${SOURCES})\n", opts.Name))
 		} else {
-			b.WriteString("file(GLOB_RECURSE SOURCES src/*.cpp)\n")
-			if opts.Type == "executable" {
-				b.WriteString(fmt.Sprintf("add_executable(%s ${SOURCES})\n", opts.Name))
-			} else {
-				b.WriteString(fmt.Sprintf("add_library(%s ${SOURCES})\n", opts.Name))
-			}
+			b.WriteString(fmt.Sprintf("add_library(%s ${SOURCES})\n", opts.Name))
 		}
 	}
+	b.WriteString("\n")
 
-	// 4. Include directories from user-svided paths.
+	// 4. Include directories from user-provided paths.
 	if len(opts.Include) > 0 {
 		b.WriteString(fmt.Sprintf("target_include_directories(%s %s %s)\n",
 			opts.Name, visibility, strings.Join(opts.Include, " ")))
@@ -78,6 +62,7 @@ func GenerateCMakeLists(opts GenerateOptions) string {
 
 	// CMake-config deps: CMAKE_PREFIX_PATH + find_package + target_link_libraries.
 	if len(cmakeDeps) > 0 {
+		b.WriteString("\n")
 		for _, dep := range cmakeDeps {
 			b.WriteString(fmt.Sprintf(
 				"list(APPEND CMAKE_PREFIX_PATH \"${CMAKE_SOURCE_DIR}/cstow_deps/%s\")\n",
@@ -96,6 +81,7 @@ func GenerateCMakeLists(opts GenerateOptions) string {
 
 	// Fallback header-only deps: target_include_directories.
 	if len(fallbackDeps) > 0 {
+		b.WriteString("\n")
 		var incPaths []string
 		for _, dep := range fallbackDeps {
 			incPaths = append(incPaths,
