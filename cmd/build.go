@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/all3n/cstow/internal/abi"
+	"github.com/all3n/cstow/internal/cmakegen"
 	"github.com/all3n/cstow/internal/config"
 	"github.com/all3n/cstow/internal/hooks"
 	"github.com/all3n/cstow/internal/resolver"
@@ -86,7 +87,9 @@ var buildCmd = &cobra.Command{
 
 		// Determine source directory
 		sourceDir := "."
+		hasCMakeLists := true
 		if _, err := os.Stat("CMakeLists.txt"); err != nil {
+			hasCMakeLists = false
 			if cfg.Legacy != nil && cfg.Legacy.Root != "" {
 				sourceDir = cfg.Legacy.Root
 			} else if len(cfg.Build.Sources) > 0 && !strings.Contains(cfg.Build.Sources[0], "*") {
@@ -120,6 +123,30 @@ var buildCmd = &cobra.Command{
 		// Add legacy extra args
 		if cfg.Legacy != nil && len(cfg.Legacy.ExtraArgs) > 0 {
 			cmakeArgs = append(cmakeArgs, cfg.Legacy.ExtraArgs...)
+		}
+
+		// Auto-generate CMakeLists.txt if missing
+		if !hasCMakeLists && sourceDir == "." {
+			fmt.Println(">> no CMakeLists.txt found, auto-generating from cstow.toml...")
+			var deps []cmakegen.DepTarget
+			if entries, derr := os.ReadDir("cstow_deps"); derr == nil && len(entries) > 0 {
+				deps, _ = cmakegen.DiscoverDeps("cstow_deps")
+			}
+			genOpts := cmakegen.GenerateOptions{
+				Name:      cfg.Package.Name,
+				Type:      cfg.Build.Type,
+				Std:       cfg.Package.Std,
+				Sources:   cfg.Build.Sources,
+				Include:   cfg.Build.Include,
+				Defines:   cfg.Build.Defines,
+				Deps:      deps,
+				Profiles:  cfg.Profiles,
+				Toolchain: cfg.Toolchain,
+			}
+			content := cmakegen.GenerateCMakeLists(genOpts)
+			if err := os.WriteFile("CMakeLists.txt", []byte(content), 0o644); err != nil {
+				return fmt.Errorf("write CMakeLists.txt: %w", err)
+			}
 		}
 
 		fmt.Printf(">> cmake configure (%s)\n", profile)
