@@ -29,11 +29,27 @@ func GenerateCMakeLists(opts GenerateOptions) string {
 		b.WriteString(fmt.Sprintf("add_library(%s INTERFACE)\n", opts.Name))
 	default:
 		// executable or library
-		b.WriteString("file(GLOB_RECURSE SOURCES src/*.cpp)\n")
-		if opts.Type == "executable" {
-			b.WriteString(fmt.Sprintf("add_executable(%s ${SOURCES})\n", opts.Name))
+		if len(opts.Sources) > 0 {
+			nonGlobSources := filterNonGlob(opts.Sources)
+			if len(nonGlobSources) > 0 {
+				b.WriteString(fmt.Sprintf("%s(${SOURCES})\n", targetKeyword(opts)))
+			}
+			for i, s := range opts.Sources {
+				if strings.Contains(s, "*") {
+					b.WriteString(fmt.Sprintf("file(GLOB_RECURSE SRC%d %s)\n", i, s))
+					b.WriteString("list(APPEND SOURCES ${SRC" + fmt.Sprintf("%d", i) + "})\n")
+				} else {
+					b.WriteString(fmt.Sprintf("list(APPEND SOURCES %s)\n", s))
+				}
+			}
+			b.WriteString(fmt.Sprintf("%s(${SOURCES})\n", targetKeyword(opts)))
 		} else {
-			b.WriteString(fmt.Sprintf("add_library(%s ${SOURCES})\n", opts.Name))
+			b.WriteString("file(GLOB_RECURSE SOURCES src/*.cpp)\n")
+			if opts.Type == "executable" {
+				b.WriteString(fmt.Sprintf("add_executable(%s ${SOURCES})\n", opts.Name))
+			} else {
+				b.WriteString(fmt.Sprintf("add_library(%s ${SOURCES})\n", opts.Name))
+			}
 		}
 	}
 
