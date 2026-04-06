@@ -105,7 +105,7 @@
 
 ## Phase E — 扩展项 (进行中)
 
-- [x] 更多构建后端支持 (Done: Added Automake support)
+- [x] 更多构建后端支持 (Done: Added Autotools support)
 - [ ] 实现 cache 清理策略 (MaxSizeGB / RetentionDays)
 - [ ] Windows/MSVC 的更完整端到端验证
 - [ ] 更细粒度的 package authoring / lint / doctor 命令

@@ -6,7 +6,7 @@ import "slices"
 type MergedBuildConfig struct {
 	System         string
 	CMakeDefines   []string
-	AutomakeArgs   []string
+	AutotoolsArgs  []string
 	CXXFlags       []string
 	LinkFlags      []string
 	IncludeDirs    []string
@@ -38,11 +38,11 @@ func Merge(pkg *PackageDef, ver *VersionOverride, toolchainKind, profile, goos s
 
 	// Layer 1: package base
 	out.CMakeDefines = slices.Clone(pkg.Build.CMake.Defines)
-	out.AutomakeArgs = slices.Clone(pkg.Build.Automake.Args)
+	out.AutotoolsArgs = slices.Clone(pkg.Build.Autotools.Args)
 	out.CXXFlags = slices.Clone(pkg.Build.CMake.CXXFlags)
-	out.CXXFlags = append(out.CXXFlags, pkg.Build.Automake.CXXFlags...)
+	out.CXXFlags = append(out.CXXFlags, pkg.Build.Autotools.CXXFlags...)
 	out.LinkFlags = slices.Clone(pkg.Build.CMake.LinkFlags)
-	out.LinkFlags = append(out.LinkFlags, pkg.Build.Automake.LinkFlags...)
+	out.LinkFlags = append(out.LinkFlags, pkg.Build.Autotools.LinkFlags...)
 
 	// Layer 2: profile
 	if po, ok := pkg.Build.Profiles[profile]; ok {
@@ -80,13 +80,13 @@ func Merge(pkg *PackageDef, ver *VersionOverride, toolchainKind, profile, goos s
 					out.InstallTargets = slices.Clone(ver.Build.CMake.InstallTargets)
 				}
 			}
-			if ver.Build.Automake != nil {
-				if len(ver.Build.Automake.Args) > 0 {
-					out.AutomakeArgs = slices.Clone(ver.Build.Automake.Args)
+			if ver.Build.Autotools != nil {
+				if len(ver.Build.Autotools.Args) > 0 {
+					out.AutotoolsArgs = slices.Clone(ver.Build.Autotools.Args)
 				}
-				out.CXXFlags = append(out.CXXFlags, ver.Build.Automake.CXXFlags...)
-				if len(ver.Build.Automake.LinkFlags) > 0 {
-					out.LinkFlags = slices.Clone(ver.Build.Automake.LinkFlags)
+				out.CXXFlags = append(out.CXXFlags, ver.Build.Autotools.CXXFlags...)
+				if len(ver.Build.Autotools.LinkFlags) > 0 {
+					out.LinkFlags = slices.Clone(ver.Build.Autotools.LinkFlags)
 				}
 			}
 			if co, ok := ver.Build.Compiler[toolchainKind]; ok {

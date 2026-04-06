@@ -51,8 +51,8 @@ func Build(opts Options) (*Result, error) {
 	}
 
 	switch opts.Config.System {
-	case "automake":
-		return buildAutomake(opts)
+	case "autotools":
+		return buildAutotools(opts)
 	case "cmake", "": // default to cmake
 		return buildCmake(opts)
 	default:
@@ -90,7 +90,7 @@ func buildCmake(opts Options) (*Result, error) {
 	return &Result{InstallDir: opts.InstallDir}, nil
 }
 
-func buildAutomake(opts Options) (*Result, error) {
+func buildAutotools(opts Options) (*Result, error) {
 	// 1. autogen.sh if exists
 	autogen := filepath.Join(opts.SourcePath, "autogen.sh")
 	if _, err := os.Stat(autogen); err == nil {
@@ -106,7 +106,7 @@ func buildAutomake(opts Options) (*Result, error) {
 	}
 
 	args := []string{fmt.Sprintf("--prefix=%s", opts.InstallDir)}
-	args = append(args, opts.Config.AutomakeArgs...)
+	args = append(args, opts.Config.AutotoolsArgs...)
 
 	// Inject toolchain if provided
 	env := os.Environ()
