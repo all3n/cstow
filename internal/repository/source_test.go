@@ -27,13 +27,13 @@ func TestExpandTagTemplate(t *testing.T) {
 }
 
 func TestFetchSource_UnsupportedType(t *testing.T) {
-	_, err := FetchSource(SourceDef{Type: "ftp"}, "1.0.0", "", t.TempDir())
+	_, err := FetchSource(SourceDef{Type: "ftp"}, nil, "1.0.0", "", t.TempDir())
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported source type")
 }
 
 func TestFetchSource_ArchiveNotImplemented(t *testing.T) {
 	// Archive is now implemented but will fail with invalid URL
-	_, err := FetchSource(SourceDef{Type: "archive", URLTemplate: "http://invalid-url.local"}, "1.0.0", "", t.TempDir())
+	_, err := FetchSource(SourceDef{Type: "archive", URLTemplate: "http://invalid-url.local"}, nil, "1.0.0", "", t.TempDir())
 	assert.Error(t, err)
 }

@@ -28,16 +28,31 @@ func ExpandTagTemplate(template, version string) string {
 // FetchSource fetches source code for a package to destDir.
 // Returns the path to the source root.
 // Supports git (clone + checkout) and archive sources.
-func FetchSource(srcDef SourceDef, version, expectedSHA256, destDir string) (string, error) {
+func FetchSource(srcDef SourceDef, ver *VersionOverride, version, expectedSHA256, destDir string) (string, error) {
 	switch srcDef.Type {
 	case "git":
-		tag := ExpandTagTemplate(srcDef.TagTemplate, version)
-		if err := FetchGit(srcDef.URL, tag, destDir); err != nil {
-			return "", fmt.Errorf("git fetch %s@%s: %w", srcDef.URL, tag, err)
+		url := srcDef.URL
+		if ver != nil && ver.Source != nil && ver.Source.URL != "" {
+			url = ver.Source.URL
+		}
+		tagTemplate := srcDef.TagTemplate
+		if ver != nil && ver.Source != nil && ver.Source.URLTemplate != "" {
+			tagTemplate = ver.Source.URLTemplate
+		}
+		tag := ExpandTagTemplate(tagTemplate, version)
+		if err := FetchGit(url, tag, destDir); err != nil {
+			return "", fmt.Errorf("git fetch %s@%s: %w", url, tag, err)
 		}
 		return destDir, nil
 	case "archive":
-		url := ExpandTagTemplate(srcDef.URLTemplate, version)
+		urlTemplate := srcDef.URLTemplate
+		if ver != nil && ver.Source != nil && ver.Source.URLTemplate != "" {
+			urlTemplate = ver.Source.URLTemplate
+		}
+		url := ExpandTagTemplate(urlTemplate, version)
+		if ver != nil && ver.Source != nil && ver.Source.URL != "" {
+			url = ver.Source.URL
+		}
 		if err := FetchArchive(url, expectedSHA256, destDir); err != nil {
 			return "", fmt.Errorf("archive fetch %s: %w", url, err)
 		}

@@ -194,7 +194,7 @@ func installFromRepository(name, versionConstraint string, opts repositoryInstal
 	}
 	defer os.RemoveAll(tmpDir)
 
-	sourcePath, err := repository.FetchSource(pkg.Def.Source, pkg.Version, expectedSHA256(pkg), tmpDir)
+	sourcePath, err := repository.FetchSource(pkg.Def.Source, pkg.Override, pkg.Version, expectedSHA256(pkg), tmpDir)
 	if err != nil {
 		return nil, fmt.Errorf("fetch source: %w", err)
 	}

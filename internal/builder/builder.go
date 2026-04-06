@@ -100,7 +100,11 @@ func buildAutotools(opts Options) (*Result, error) {
 	}
 
 	// 2. configure
-	configure := filepath.Join(opts.SourcePath, "configure")
+	scriptName := opts.Config.AutotoolsScript
+	if scriptName == "" {
+		scriptName = "configure"
+	}
+	configure := filepath.Join(opts.SourcePath, scriptName)
 	if _, err := os.Stat(configure); err != nil {
 		return nil, fmt.Errorf("configure script not found: %s", configure)
 	}
@@ -120,6 +124,9 @@ func buildAutotools(opts Options) (*Result, error) {
 	}
 
 	// Inject flags
+	if len(opts.Config.CFlags) > 0 {
+		env = append(env, "CFLAGS="+strings.Join(opts.Config.CFlags, " "))
+	}
 	if len(opts.Config.CXXFlags) > 0 {
 		env = append(env, "CXXFLAGS="+strings.Join(opts.Config.CXXFlags, " "))
 	}
@@ -173,6 +180,7 @@ func ValidateInstall(opts Options) error {
 		for _, c := range candidates {
 			searchPaths := []string{
 				filepath.Join(opts.InstallDir, "lib", c),
+				filepath.Join(opts.InstallDir, "lib64", c),
 				filepath.Join(opts.InstallDir, "bin", c),
 				filepath.Join(opts.InstallDir, c),
 			}

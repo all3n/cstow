@@ -44,25 +44,30 @@ type CMakeBuildDef struct {
 }
 
 type AutotoolsBuildDef struct {
-	Args      []string `toml:"args"` // Extra args to ./configure
+	Script    string   `toml:"configure_script"` // e.g. "config" for OpenSSL
+	Args      []string `toml:"args"`             // Extra args to ./configure
+	CFlags    []string `toml:"c_flags"`
 	CXXFlags  []string `toml:"cxx_flags"`
 	LinkFlags []string `toml:"link_flags"`
 }
 
 type ProfileOverride struct {
 	Defines   []string `toml:"defines"`
+	CFlags    []string `toml:"c_flags"`
 	CXXFlags  []string `toml:"cxx_flags"`
 	LinkFlags []string `toml:"link_flags"`
 }
 
 type CompilerOverride struct {
 	Defines   []string `toml:"defines"`
+	CFlags    []string `toml:"c_flags"`
 	CXXFlags  []string `toml:"cxx_flags"`
 	LinkFlags []string `toml:"link_flags"`
 }
 
 type PlatformOverride struct {
 	Defines   []string `toml:"defines"`
+	CFlags    []string `toml:"c_flags"`
 	CXXFlags  []string `toml:"cxx_flags"`
 	LinkFlags []string `toml:"link_flags"`
 }
@@ -80,7 +85,9 @@ type VersionOverride struct {
 }
 
 type SourceOverride struct {
-	SHA256 string `toml:"sha256"`
+	URL         string `toml:"url"`
+	URLTemplate string `toml:"url_template"`
+	SHA256      string `toml:"sha256"`
 }
 
 type BuildOverride struct {

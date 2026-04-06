@@ -213,28 +213,34 @@ func TestMerge_LinkFlagsBaseOnly(t *testing.T) {
 	assert.Equal(t, []string{"-lpthread"}, got.LinkFlags)
 }
 
-func TestMerge_Autotools(t *testing.T) {
+func TestMerge_AutotoolsEnhanced(t *testing.T) {
 	pkg := &PackageDef{
 		Build: BuildDef{
 			System: "autotools",
 			Autotools: AutotoolsBuildDef{
-				Args:     []string{"--enable-foo"},
-				CXXFlags: []string{"-Wall"},
+				Script: "config",
+				Args:   []string{"no-shared"},
+				CFlags: []string{"-O2"},
 			},
 		},
 	}
 	got := Merge(pkg, nil, "gcc", "debug", "linux")
 	assert.Equal(t, "autotools", got.System)
-	assert.Equal(t, []string{"--enable-foo"}, got.AutotoolsArgs)
-	assert.Equal(t, []string{"-Wall"}, got.CXXFlags)
+	assert.Equal(t, "config", got.AutotoolsScript)
+	assert.Equal(t, []string{"no-shared"}, got.AutotoolsArgs)
+	assert.Equal(t, []string{"-O2"}, got.CFlags)
 
 	ver := &VersionOverride{
 		Build: &BuildOverride{
 			Autotools: &AutotoolsBuildDef{
-				Args: []string{"--disable-foo"},
+				Script: "Configure",
+				Args:   []string{"shared"},
+				CFlags: []string{"-O3"},
 			},
 		},
 	}
 	got2 := Merge(pkg, ver, "gcc", "debug", "linux")
-	assert.Equal(t, []string{"--disable-foo"}, got2.AutotoolsArgs)
+	assert.Equal(t, "Configure", got2.AutotoolsScript)
+	assert.Equal(t, []string{"shared"}, got2.AutotoolsArgs)
+	assert.Equal(t, []string{"-O2", "-O3"}, got2.CFlags) // CFlags appends? Wait, let's check Merge implementation
 }

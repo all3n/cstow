@@ -30,7 +30,8 @@
 - `artifact list` / `artifact sync` / `artifact show <hashid>` 已可用，基于 SQLite 索引
 - `workspace` 已支持基于拓扑排序的顺序构建和并行调度 (`--jobs`)
 - `cstow gen` 已支持为 workspace 项目生成 `CMakeLists.txt` 和 `CMakePresets.json`
-- Builder 已支持 debug profile 库名校验（`d` 后缀）和 shared 库变体搜索
+- Builder 已支持 debug profile 库名校验（`d` 后缀）、shared 库变体搜索以及 lib64 路径
+- Builder 已支持灵活的 Autotools 构建系统（支持自定义 configure 脚本和 CFLAGS）
 
 ### 2. 已实现但未闭环
 

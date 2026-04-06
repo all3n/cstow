@@ -4,16 +4,18 @@ import "slices"
 
 // MergedBuildConfig is the fully resolved build configuration for one dependency.
 type MergedBuildConfig struct {
-	System         string
-	CMakeDefines   []string
-	AutotoolsArgs  []string
-	CXXFlags       []string
-	LinkFlags      []string
-	IncludeDirs    []string
-	Libs           []string
-	InstallTargets []string
-	Patch          string
-	BuildType      string // static, shared, header-only
+	System          string
+	CMakeDefines    []string
+	AutotoolsArgs   []string
+	AutotoolsScript string
+	CFlags          []string
+	CXXFlags        []string
+	LinkFlags       []string
+	IncludeDirs     []string
+	Libs            []string
+	InstallTargets  []string
+	Patch           string
+	BuildType       string // static, shared, header-only
 }
 
 // Merge applies configuration layers in priority order (lowest → highest):
@@ -24,11 +26,12 @@ type MergedBuildConfig struct {
 //  5. version-specific cmake override (replaces defines/link_flags if non-empty; cxx_flags append; compiler appends)
 func Merge(pkg *PackageDef, ver *VersionOverride, toolchainKind, profile, goos string) *MergedBuildConfig {
 	out := &MergedBuildConfig{
-		System:         pkg.Build.System,
-		IncludeDirs:    slices.Clone(pkg.Artifacts.IncludeDirs),
-		Libs:           slices.Clone(pkg.Artifacts.Libs),
-		InstallTargets: slices.Clone(pkg.Build.CMake.InstallTargets),
-		BuildType:      pkg.Build.Type,
+		System:          pkg.Build.System,
+		IncludeDirs:     slices.Clone(pkg.Artifacts.IncludeDirs),
+		Libs:            slices.Clone(pkg.Artifacts.Libs),
+		InstallTargets:  slices.Clone(pkg.Build.CMake.InstallTargets),
+		BuildType:       pkg.Build.Type,
+		AutotoolsScript: pkg.Build.Autotools.Script,
 	}
 
 	// Version override can change build type
@@ -39,6 +42,7 @@ func Merge(pkg *PackageDef, ver *VersionOverride, toolchainKind, profile, goos s
 	// Layer 1: package base
 	out.CMakeDefines = slices.Clone(pkg.Build.CMake.Defines)
 	out.AutotoolsArgs = slices.Clone(pkg.Build.Autotools.Args)
+	out.CFlags = slices.Clone(pkg.Build.Autotools.CFlags)
 	out.CXXFlags = slices.Clone(pkg.Build.CMake.CXXFlags)
 	out.CXXFlags = append(out.CXXFlags, pkg.Build.Autotools.CXXFlags...)
 	out.LinkFlags = slices.Clone(pkg.Build.CMake.LinkFlags)
@@ -47,6 +51,7 @@ func Merge(pkg *PackageDef, ver *VersionOverride, toolchainKind, profile, goos s
 	// Layer 2: profile
 	if po, ok := pkg.Build.Profiles[profile]; ok {
 		out.CMakeDefines = append(out.CMakeDefines, po.Defines...)
+		out.CFlags = append(out.CFlags, po.CFlags...)
 		out.CXXFlags = append(out.CXXFlags, po.CXXFlags...)
 		out.LinkFlags = append(out.LinkFlags, po.LinkFlags...)
 	}
@@ -54,6 +59,7 @@ func Merge(pkg *PackageDef, ver *VersionOverride, toolchainKind, profile, goos s
 	// Layer 3: compiler
 	if co, ok := pkg.Build.Compiler[toolchainKind]; ok {
 		out.CMakeDefines = append(out.CMakeDefines, co.Defines...)
+		out.CFlags = append(out.CFlags, co.CFlags...)
 		out.CXXFlags = append(out.CXXFlags, co.CXXFlags...)
 		out.LinkFlags = append(out.LinkFlags, co.LinkFlags...)
 	}
@@ -61,6 +67,7 @@ func Merge(pkg *PackageDef, ver *VersionOverride, toolchainKind, profile, goos s
 	// Layer 4: platform
 	if po, ok := pkg.Build.Platform[goos]; ok {
 		out.CMakeDefines = append(out.CMakeDefines, po.Defines...)
+		out.CFlags = append(out.CFlags, po.CFlags...)
 		out.CXXFlags = append(out.CXXFlags, po.CXXFlags...)
 		out.LinkFlags = append(out.LinkFlags, po.LinkFlags...)
 	}
@@ -81,9 +88,13 @@ func Merge(pkg *PackageDef, ver *VersionOverride, toolchainKind, profile, goos s
 				}
 			}
 			if ver.Build.Autotools != nil {
+				if ver.Build.Autotools.Script != "" {
+					out.AutotoolsScript = ver.Build.Autotools.Script
+				}
 				if len(ver.Build.Autotools.Args) > 0 {
 					out.AutotoolsArgs = slices.Clone(ver.Build.Autotools.Args)
 				}
+				out.CFlags = append(out.CFlags, ver.Build.Autotools.CFlags...)
 				out.CXXFlags = append(out.CXXFlags, ver.Build.Autotools.CXXFlags...)
 				if len(ver.Build.Autotools.LinkFlags) > 0 {
 					out.LinkFlags = slices.Clone(ver.Build.Autotools.LinkFlags)
@@ -91,6 +102,7 @@ func Merge(pkg *PackageDef, ver *VersionOverride, toolchainKind, profile, goos s
 			}
 			if co, ok := ver.Build.Compiler[toolchainKind]; ok {
 				out.CMakeDefines = append(out.CMakeDefines, co.Defines...)
+				out.CFlags = append(out.CFlags, co.CFlags...)
 				out.CXXFlags = append(out.CXXFlags, co.CXXFlags...)
 				out.LinkFlags = append(out.LinkFlags, co.LinkFlags...)
 			}
