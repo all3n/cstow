@@ -103,8 +103,8 @@ Follow the code as it exists today, not design docs. Key capabilities:
 - `search` scans repository paths for packages by name.
 - `gen` generates `CMakeLists.txt` and `CMakePresets.json` for workspace projects.
 - Repository paths support project-level `.cstow/repository/` with highest priority.
-- `internal/repository/source.go` supports both `git` and `archive` (.tar.gz, .zip) sources.
-- `internal/builder/` supports CMake only, handles patch application before build, validates debug/shared library variants.
+- `internal/repository/source.go` supports both `git` and `archive` (.tar.gz, .zip) sources, with support for version-specific `url` and `url_template` overrides.
+- `internal/builder/` supports CMake and Autotools (with custom `configure_script` and `CFLAGS` support), handles patch application before build, and validates debug/shared library variants across `lib`, `lib64`, and `bin` paths.
 - Workspace supports topological build order and parallel building (`--jobs`).
 - Local artifact DB (`~/.cstow/cstow.db`) indexes all successful builds and fetches.
 
