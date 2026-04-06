@@ -10,10 +10,14 @@ import (
 )
 
 func TestOpenSSL_VersionResolution(t *testing.T) {
-	cwd, err := os.Getwd()
+	home, err := os.UserHomeDir()
 	require.NoError(t, err)
-	projectRoot := filepath.Dir(filepath.Dir(cwd))
-	repoRoot := filepath.Join(projectRoot, ".cstow", "repository")
+	repoRoot := filepath.Join(home, "workspaces", "cstow-repository")
+
+	// Skip if the external repository doesn't exist (e.g. in some CI environments)
+	if _, err := os.Stat(repoRoot); err != nil {
+		t.Skipf("External repository not found at %s, skipping", repoRoot)
+	}
 
 	finder := NewFinderWithPaths([]string{repoRoot})
 	
