@@ -199,14 +199,17 @@ func SaveLock(path string, lf *LockFile) error {
 	return enc.Encode(lf)
 }
 
-// AddDependency adds a dependency to cstow.toml
-func AddDependency(cfg *config.Config, dep config.Dependency) {
-	for _, d := range cfg.Dependencies {
+// AddDependency adds or updates a dependency in cstow.toml.
+// Returns true if an existing dependency was updated, false if a new one was added.
+func AddDependency(cfg *config.Config, dep config.Dependency) bool {
+	for i, d := range cfg.Dependencies {
 		if d.Name == dep.Name {
-			return // already present
+			cfg.Dependencies[i] = dep
+			return true // updated
 		}
 	}
 	cfg.Dependencies = append(cfg.Dependencies, dep)
+	return false // added
 }
 
 // FSChunk implements LocalCache using filesystem
