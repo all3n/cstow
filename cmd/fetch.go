@@ -97,6 +97,10 @@ func runFetch(cfg *config.Config, opts fetchOptions) error {
 		depsDir = filepath.Join(workDir, "cstow_deps")
 	}
 
+	// Persistent flags (from rootCmd)
+	extraRepos, _ := rootCmd.PersistentFlags().GetStringSlice("repository")
+	overrideRegistry, _ := rootCmd.PersistentFlags().GetString("registry")
+
 	// Acquire file lock for the project's dependency operations.
 	// We use a hidden .cstow.lock.lock file to manage access to cstow.lock and cstow_deps.
 	projectLock := flock.New(filepath.Join(filepath.Dir(lockPath), ".cstow.lock.lock"))
@@ -129,10 +133,20 @@ func runFetch(cfg *config.Config, opts fetchOptions) error {
 	if err != nil {
 		return fmt.Errorf("load global config: %w", err)
 	}
-	if reg, regErr := config.ResolvePrimaryRegistry(cfg.Registries, globalCfg); regErr == nil {
+
+	reg, regErr := config.ResolvePrimaryRegistry(cfg.Registries, globalCfg)
+	if regErr == nil {
+		if overrideRegistry != "" {
+			reg.URL = overrideRegistry
+		}
 		s3client, err = fetchNewRegistryClient(context.Background(), reg)
 		if err != nil {
 			return fmt.Errorf("create S3 client: %w", err)
+		}
+	} else if overrideRegistry != "" {
+		s3client, err = fetchNewRegistryClient(context.Background(), config.Registry{URL: overrideRegistry})
+		if err != nil {
+			return fmt.Errorf("create S3 client from override: %w", err)
 		}
 	}
 
@@ -142,7 +156,8 @@ func runFetch(cfg *config.Config, opts fetchOptions) error {
 		if installCtx != nil || installCtxErr != nil {
 			return installCtx, installCtxErr
 		}
-		installCtx, installCtxErr = newRepositoryInstallContext(cfg, opts.Profile, opts.Toolchain)
+		// Pass repo overrides to repository context
+		installCtx, installCtxErr = newRepositoryInstallContext(cfg, opts.Profile, opts.Toolchain, extraRepos)
 		return installCtx, installCtxErr
 	}
 
@@ -370,6 +385,14 @@ func runFetch(cfg *config.Config, opts fetchOptions) error {
 		fmt.Fprintf(opts.Stdout, "\n  CMAKE_PREFIX_PATH=%s\n", strings.Join(prefixPaths, string(filepath.ListSeparator)))
 	}
 
+	// 6. Automatic cache pruning (background-like, only if limits are set)
+	if globalCfg.Cache.MaxSizeGB > 0 || globalCfg.Cache.RetentionDays > 0 {
+		if store, err := artifactdb.OpenDefault(); err == nil {
+			defer store.Close()
+			_, _ = store.Prune(globalCfg.Cache.RetentionDays, globalCfg.Cache.MaxSizeGB, false)
+		}
+	}
+
 	return nil
 }
 
@@ -440,14 +463,22 @@ func fetchByHashID(cmd *cobra.Command, hashID string) error {
 		return fmt.Errorf("load global config: %w", err)
 	}
 
+	overrideRegistry, _ := rootCmd.PersistentFlags().GetString("registry")
+
 	var projectRegistries []config.Registry
 	if cfg != nil {
 		projectRegistries = cfg.Registries
 	}
 	reg, err := config.ResolvePrimaryRegistry(projectRegistries, globalCfg)
 	if err != nil {
-		return fmt.Errorf("resolve registry: %w", err)
+		if overrideRegistry == "" {
+			return fmt.Errorf("resolve registry: %w", err)
+		}
+		reg = config.Registry{URL: overrideRegistry}
+	} else if overrideRegistry != "" {
+		reg.URL = overrideRegistry
 	}
+
 	s3client, err := fetchNewRegistryClient(context.Background(), reg)
 	if err != nil {
 		return fmt.Errorf("create S3 client: %w", err)

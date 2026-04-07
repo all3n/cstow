@@ -58,7 +58,9 @@ var installCmd = &cobra.Command{
 			}
 		}
 
-		ctx, err := newRepositoryInstallContext(projectCfg, profile, toolchainName)
+		extraRepos, _ := rootCmd.PersistentFlags().GetStringSlice("repository")
+
+		ctx, err := newRepositoryInstallContext(projectCfg, profile, toolchainName, extraRepos)
 		if err != nil {
 			return err
 		}

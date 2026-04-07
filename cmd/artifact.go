@@ -104,13 +104,18 @@ var artifactPruneCmd = &cobra.Command{
 			return err
 		}
 
-		if dryRun {
-			fmt.Fprintln(cmd.OutOrStdout(), "Dry run: would have deleted:")
-		} else {
-			fmt.Fprintln(cmd.OutOrStdout(), "Cache pruned successfully:")
+		if stats.RecordsDeleted == 0 {
+			fmt.Fprintln(cmd.OutOrStdout(), "Cache is within limits, nothing to prune.")
+			return nil
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "  Records deleted: %d\n", stats.RecordsDeleted)
-		fmt.Fprintf(cmd.OutOrStdout(), "  Space freed: %.2f MB\n", float64(stats.BytesFreed)/(1024*1024))
+
+		if dryRun {
+			fmt.Fprintf(cmd.OutOrStdout(), "[DRY RUN] Would delete %d artifacts (approx. %.2f MB)\n",
+				stats.RecordsDeleted, float64(stats.BytesFreed)/(1024*1024))
+		} else {
+			fmt.Fprintf(cmd.OutOrStdout(), "Successfully pruned %d artifacts, freed %.2f MB\n",
+				stats.RecordsDeleted, float64(stats.BytesFreed)/(1024*1024))
+		}
 		return nil
 	},
 }

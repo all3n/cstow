@@ -17,10 +17,11 @@ import (
 )
 
 type repositoryInstallContext struct {
-	Global    *config.Global
-	Toolchain *toolchain.Toolchain
-	Std       string
-	Profile   string
+	Global     *config.Global
+	Toolchain  *toolchain.Toolchain
+	Std        string
+	Profile    string
+	ExtraRepos []string
 }
 
 type repositoryInstallOptions struct {
@@ -76,7 +77,7 @@ func findProjectRoot() string {
 	}
 }
 
-func newRepositoryInstallContext(projectCfg *config.Config, profile, toolchainName string) (*repositoryInstallContext, error) {
+func newRepositoryInstallContext(projectCfg *config.Config, profile, toolchainName string, extraRepos []string) (*repositoryInstallContext, error) {
 	g, err := config.LoadGlobal()
 	if err != nil {
 		return nil, fmt.Errorf("load global config: %w", err)
@@ -114,10 +115,11 @@ func newRepositoryInstallContext(projectCfg *config.Config, profile, toolchainNa
 	}
 
 	return &repositoryInstallContext{
-		Global:    g,
-		Toolchain: tc,
-		Std:       std,
-		Profile:   resolvedProfile,
+		Global:     g,
+		Toolchain:  tc,
+		Std:        std,
+		Profile:    resolvedProfile,
+		ExtraRepos: extraRepos,
 	}, nil
 }
 
@@ -139,7 +141,11 @@ func installFromRepository(name, versionConstraint string, opts repositoryInstal
 		opts.Stderr = os.Stderr
 	}
 
-	finder := repository.NewFinderWithPaths(opts.Context.Global.RepositoryPaths(findProjectRoot()))
+	repoPaths := opts.Context.ExtraRepos
+	if len(repoPaths) == 0 {
+		repoPaths = opts.Context.Global.RepositoryPaths(findProjectRoot())
+	}
+	finder := repository.NewFinderWithPaths(repoPaths)
 	pkg, err := finder.Find(name, versionConstraint)
 	if err != nil {
 		return nil, err

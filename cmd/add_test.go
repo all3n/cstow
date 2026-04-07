@@ -171,7 +171,7 @@ func TestAddValidatesRepoDependency(t *testing.T) {
 	setupAddTest(t)
 
 	prevFinder := addNewRepoFinder
-	addNewRepoFinder = func() (*repository.Finder, error) {
+	addNewRepoFinder = func(extraPaths []string) (*repository.Finder, error) {
 		return repository.NewFinderWithPaths([]string{"/nonexistent"}), nil
 	}
 	t.Cleanup(func() { addNewRepoFinder = prevFinder })

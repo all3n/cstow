@@ -22,8 +22,21 @@ var addNewRegistryValidator = func(ctx context.Context, reg config.Registry) (ad
 	return registry.NewS3Client(ctx, reg)
 }
 
-var addNewRepoFinder = func() (*repository.Finder, error) {
-	return repository.NewFinder(findProjectRoot())
+var addNewRepoFinder = func(extraPaths []string) (*repository.Finder, error) {
+	paths := extraPaths
+	if len(paths) == 0 {
+		paths = findProjectRootPaths()
+	}
+	return repository.NewFinderWithPaths(paths), nil
+}
+
+func findProjectRootPaths() []string {
+	root := findProjectRoot()
+	global, _ := config.LoadGlobal()
+	if global != nil {
+		return global.RepositoryPaths(root)
+	}
+	return []string{root}
 }
 
 var addCmd = &cobra.Command{
@@ -60,6 +73,10 @@ var addCmd = &cobra.Command{
 		cxxFlags, _ := cmd.Flags().GetString("cxx-flags")
 		linkFlags, _ := cmd.Flags().GetString("link-flags")
 
+		// Persistent flags
+		extraRepos, _ := cmd.Flags().GetStringSlice("repository")
+		overrideRegistry, _ := cmd.Flags().GetString("registry")
+
 		if source == "git" {
 			if gitURL == "" {
 				return fmt.Errorf("--git-url is required when --source is git")
@@ -67,10 +84,14 @@ var addCmd = &cobra.Command{
 			if tag == "" {
 				tag = "main"
 			}
+			// If no explicit version provided, use tag as version
+			if version == "*" || version == "" {
+				version = tag
+			}
 		}
 
 		// Validate dependency before writing
-		if err := validateDependency(name, version, source); err != nil {
+		if err := validateDependency(name, version, source, overrideRegistry, extraRepos); err != nil {
 			return err
 		}
 
@@ -91,7 +112,7 @@ var addCmd = &cobra.Command{
 				}
 			}
 		}
-		resolver.AddDependency(cfg, dep)
+		updated := resolver.AddDependency(cfg, dep)
 
 		// Resolve first — only persist if resolution succeeds
 		cache := resolver.NewFSCache()
@@ -109,7 +130,11 @@ var addCmd = &cobra.Command{
 			return fmt.Errorf("save lock file: %w", err)
 		}
 
-		fmt.Printf("Added %s@%s (source: %s)\n", name, version, source)
+		action := "Added"
+		if updated {
+			action = "Updated"
+		}
+		fmt.Printf("%s %s@%s (source: %s)\n", action, name, version, source)
 		return nil
 	},
 }
@@ -125,19 +150,19 @@ func parsePackageSpec(spec string) (name, version string) {
 	return
 }
 
-func validateDependency(name, version, source string) error {
+func validateDependency(name, version, source, registryOverride string, repoOverrides []string) error {
 	if source == "git" {
 		return nil // git deps are validated by URL reachability, not registry/repo
 	}
 	ctx := context.Background()
 
 	if source == "registry" {
-		return validateRegistryDependency(ctx, name, version)
+		return validateRegistryDependency(ctx, name, version, registryOverride)
 	}
-	return validateRepoDependency(name, version)
+	return validateRepoDependency(name, version, repoOverrides)
 }
 
-func validateRegistryDependency(ctx context.Context, name, version string) error {
+func validateRegistryDependency(ctx context.Context, name, version, registryOverride string) error {
 	globalCfg, err := config.LoadGlobal()
 	if err != nil {
 		return fmt.Errorf("load global config: %w", err)
@@ -151,7 +176,13 @@ func validateRegistryDependency(ctx context.Context, name, version string) error
 
 	reg, err := config.ResolvePrimaryRegistry(cfg.Registries, globalCfg)
 	if err != nil {
-		return fmt.Errorf("no registry configured: %w", err)
+		if registryOverride == "" {
+			return fmt.Errorf("no registry configured: %w", err)
+		}
+		// Use manual override if no registry configured
+		reg = config.Registry{URL: registryOverride}
+	} else if registryOverride != "" {
+		reg.URL = registryOverride
 	}
 
 	client, err := addNewRegistryValidator(ctx, reg)
@@ -179,8 +210,8 @@ func validateRegistryDependency(ctx context.Context, name, version string) error
 	return nil
 }
 
-func validateRepoDependency(name, version string) error {
-	finder, err := addNewRepoFinder()
+func validateRepoDependency(name, version string, repoOverrides []string) error {
+	finder, err := addNewRepoFinder(repoOverrides)
 	if err != nil {
 		return fmt.Errorf("load repository config: %w", err)
 	}
