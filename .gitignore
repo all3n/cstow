@@ -6,3 +6,4 @@ env.local.sh
 /tmp
 cstow.lock
 packages/
+/test-*
