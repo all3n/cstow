@@ -53,7 +53,7 @@ profile = "debug"
 		0o644,
 	))
 
-	ctx, err := newRepositoryInstallContext(nil, "debug", "gcc")
+	ctx, err := newRepositoryInstallContext(nil, "debug", "gcc", nil)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -138,7 +138,7 @@ profile = "debug"
 		0o644,
 	))
 
-	ctx, err := newRepositoryInstallContext(nil, "debug", "gcc")
+	ctx, err := newRepositoryInstallContext(nil, "debug", "gcc", nil)
 	require.NoError(t, err)
 
 	var stdout bytes.Buffer
@@ -199,7 +199,7 @@ profile = "debug"
 		0o644,
 	))
 
-	ctx, err := newRepositoryInstallContext(nil, "debug", "gcc")
+	ctx, err := newRepositoryInstallContext(nil, "debug", "gcc", nil)
 	require.NoError(t, err)
 
 	staticResult, err := installFromRepository("mini-split", "^1", repositoryInstallOptions{
@@ -372,7 +372,7 @@ profile = "debug"
 		0o644,
 	))
 
-	ctx, err := newRepositoryInstallContext(nil, "debug", "gcc")
+	ctx, err := newRepositoryInstallContext(nil, "debug", "gcc", nil)
 	require.NoError(t, err)
 
 	result, err := installFromRepository("mini-indexed", "^1", repositoryInstallOptions{

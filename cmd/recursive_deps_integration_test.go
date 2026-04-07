@@ -144,7 +144,7 @@ profile = "debug"
 		0o644,
 	))
 
-	ctx, err := newRepositoryInstallContext(nil, "debug", "gcc")
+	ctx, err := newRepositoryInstallContext(nil, "debug", "gcc", nil)
 	require.NoError(t, err)
 
 	var stdout bytes.Buffer

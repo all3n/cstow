@@ -14,12 +14,14 @@ import (
 type CMakeScanner struct{}
 // ScanResult holds discovered dependencies
 type ScanResult struct {
+	Name         string
 	Dependencies []config.Dependency
 	Warnings     []string
 	Std          string
 }
 
 var (
+	projectRe      = regexp.MustCompile(`(?i)project\s*\(\s*(\w+)`)
 	findPackageRe  = regexp.MustCompile(`(?i)find_package\s*\(\s*(\w+)\s*(?:VERSION\s+(\S+))?\s*(REQUIRED)?`)
 	fetchDeclareRe = regexp.MustCompile(`(?i)FetchContent_Declare\s*\(`)
 	fetchNameRe    = regexp.MustCompile(`\(\s*(\w+)\s`)
@@ -56,6 +58,13 @@ func (s *CMakeScanner) Scan(cmakePath string) (*ScanResult, error) {
 		// set(CMAKE_CXX_STANDARD 20)
 		if m := cxxStdRe.FindStringSubmatch(line); m != nil {
 			result.Std = "c++" + m[1]
+		}
+
+		// project(MyName)
+		if result.Name == "" {
+			if m := projectRe.FindStringSubmatch(line); m != nil {
+				result.Name = m[1]
+			}
 		}
 
 		// find_package(Foo VERSION x.y.z REQUIRED)

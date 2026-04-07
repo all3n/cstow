@@ -79,7 +79,7 @@ std = "c++17"
 profile = "debug"
 `), 0o644))
 
-	ctx, err := newRepositoryInstallContext(nil, "debug", "gcc")
+	ctx, err := newRepositoryInstallContext(nil, "debug", "gcc", nil)
 	require.NoError(t, err)
 
 	// Run install

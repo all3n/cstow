@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"github.com/BurntSushi/toml"
 )
 
 // ScaffoldPackage creates a new package recipe skeleton in the specified repository.
@@ -24,33 +22,50 @@ func ScaffoldPackage(repoDir, pkgName string) error {
 		return fmt.Errorf("create package dirs: %w", err)
 	}
 
-	def := PackageDef{
-		Package: PackageMeta{
-			Name: pkgName,
-		},
-		Versions: []string{"0.1.0"},
-		Source: SourceDef{
-			Type:        "git",
-			TagTemplate: "{version}",
-		},
-		Build: BuildDef{
-			System: "cmake",
-			Type:   "static",
-		},
-		Artifacts: ArtifactsDef{
-			IncludeDirs: []string{"include"},
-		},
+	template := fmt.Sprintf(`# cstow package definition: %s
+
+[package]
+name = "%s"
+description = ""
+homepage = ""
+license = ""
+
+versions = ["0.1.0"]
+
+[source]
+# type: git | archive
+type = "git"
+url = ""
+# for git:
+tag_template = "v{version}"
+# for archive:
+# url_template = "https://example.com/%s-{version}.tar.gz"
+
+[build]
+# system: cmake | autotools | header-only
+system = "cmake"
+# type: static | shared | header-only
+type = "static"
+
+[build.options]
+# BUILD_SHARED_LIBS = "ON"
+
+[artifacts]
+include_dirs = ["include"]
+# install_targets = ["lib/lib%s.a"]
+`, pkgName, pkgName, pkgName, pkgName)
+
+	if err := os.WriteFile(pkgFile, []byte(template), 0o644); err != nil {
+		return fmt.Errorf("write package.toml template: %w", err)
 	}
 
-	f, err := os.Create(pkgFile)
-	if err != nil {
-		return fmt.Errorf("create package.toml: %w", err)
-	}
-	defer f.Close()
-
-	enc := toml.NewEncoder(f)
-	if err := enc.Encode(def); err != nil {
-		return fmt.Errorf("write package.toml: %w", err)
+	// Create a dummy version override example
+	versionExample := `[source]
+# override url or rev for this specific version
+# rev = "commit-hash"
+`
+	if err := os.WriteFile(filepath.Join(pkgDir, "versions", "0.1.0.toml"), []byte(versionExample), 0o644); err != nil {
+		return fmt.Errorf("write version override template: %w", err)
 	}
 
 	return nil

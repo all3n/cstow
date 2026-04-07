@@ -119,7 +119,7 @@ profile = "debug"
 `, repoRoot)), 0644))
 
 	// 5. Run install
-	ctx, err := newRepositoryInstallContext(nil, "debug", "gcc")
+	ctx, err := newRepositoryInstallContext(nil, "debug", "gcc", nil)
 	require.NoError(t, err)
 
 	result, err := installFromRepository("mini-patch", "1.0.0", repositoryInstallOptions{

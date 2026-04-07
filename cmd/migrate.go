@@ -19,11 +19,6 @@ var migrateCmd = &cobra.Command{
 		}
 
 		name, _ := cmd.Flags().GetString("name")
-		if name == "" {
-			// Use current directory name
-			dir, _ := os.Getwd()
-			name = filepath.Base(dir)
-		}
 		version, _ := cmd.Flags().GetString("version")
 		if version == "" {
 			version = "0.1.0"
@@ -38,7 +33,7 @@ var migrateCmd = &cobra.Command{
 	},
 }
 
-func migrateCMake(name, version string) error {
+func migrateCMake(providedName, version string) error {
 	cmakePath := "CMakeLists.txt"
 	if _, err := os.Stat(cmakePath); err != nil {
 		return fmt.Errorf("CMakeLists.txt not found in current directory")
@@ -50,6 +45,17 @@ func migrateCMake(name, version string) error {
 		return fmt.Errorf("scan CMakeLists.txt: %w", err)
 	}
 
+	name := providedName
+	if name == "" {
+		if result.Name != "" {
+			name = result.Name
+		} else {
+			dir, _ := os.Getwd()
+			name = filepath.Base(dir)
+		}
+	}
+
+	fmt.Printf(">> migrating project: %s (version: %s)\n", name, version)
 	fmt.Printf(">> found %d dependencies (std: %s)\n", len(result.Dependencies), result.Std)
 	for _, dep := range result.Dependencies {
 		fmt.Printf("   - %s@%s (source: %s)\n", dep.Name, dep.Version, dep.Source)
