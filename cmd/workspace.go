@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,14 +15,93 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// runBuildInDir changes to workDir and executes the build logic.
-func runBuildInDir(workDir string, profile, toolchainName string, autoFetch bool) error {
-	return runBuild(workDir, profile, toolchainName, autoFetch, os.Stdout, os.Stderr)
-}
-
 var workspaceCmd = &cobra.Command{
 	Use:   "workspace",
 	Short: "Manage multi-package workspace",
+}
+
+var workspaceInitCmd = &cobra.Command{
+	Use:   "init [name]",
+	Short: "Initialize a new workspace in the current directory",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := "workspace"
+		if len(args) > 0 {
+			name = args[0]
+		}
+
+		cfgPath := "cstow.toml"
+		if _, err := os.Stat(cfgPath); err == nil {
+			return fmt.Errorf("cstow.toml already exists")
+		}
+
+		cfg := &config.Config{
+			Package: config.Package{
+				Name:    name,
+				Version: "0.1.0",
+			},
+			Workspace: &config.Workspace{
+				Members: []string{},
+			},
+		}
+
+		if err := cfg.Save(cfgPath); err != nil {
+			return err
+		}
+
+		fmt.Printf("Created workspace %s in %s\n", name, cfgPath)
+		return nil
+	},
+}
+
+var workspaceAddCmd = &cobra.Command{
+	Use:   "add <path>",
+	Short: "Add a member to the workspace",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		path := args[0]
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			return err
+		}
+
+		dir, _ := os.Getwd()
+		cfgPath := filepath.Join(dir, "cstow.toml")
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return fmt.Errorf("load workspace config: %w", err)
+		}
+
+		if cfg.Workspace == nil {
+			return fmt.Errorf("cstow.toml is not a workspace (missing [workspace] section)")
+		}
+
+		// Check if member already exists
+		relPath, err := filepath.Rel(dir, absPath)
+		if err != nil {
+			return err
+		}
+
+		for _, m := range cfg.Workspace.Members {
+			if m == relPath {
+				fmt.Printf("Member %s already exists in workspace\n", relPath)
+				return nil
+			}
+		}
+
+		// Verify member has cstow.toml
+		memberCfgPath := filepath.Join(absPath, "cstow.toml")
+		if _, err := os.Stat(memberCfgPath); err != nil {
+			return fmt.Errorf("member %s has no cstow.toml", relPath)
+		}
+
+		cfg.Workspace.Members = append(cfg.Workspace.Members, relPath)
+		if err := cfg.Save(cfgPath); err != nil {
+			return err
+		}
+
+		fmt.Printf("Added member %s to workspace\n", relPath)
+		return nil
+	},
 }
 
 var workspaceListCmd = &cobra.Command{
@@ -49,7 +130,11 @@ var workspaceListCmd = &cobra.Command{
 		} else {
 			fmt.Printf("Members (%d):\n", len(ws.Members))
 			for _, m := range ws.Members {
-				fmt.Printf("  - %s\n", m)
+				rel, err := filepath.Rel(ws.Root, m)
+				if err != nil {
+					rel = m // fallback to whatever is stored
+				}
+				fmt.Printf("  - %s\n", rel)
 			}
 		}
 		return nil
@@ -123,10 +208,34 @@ var workspaceBuildCmd = &cobra.Command{
 			current := count
 			mu.Unlock()
 
-			fmt.Printf("\n>> [%d/%d] building %s\n", current, total, m.Name)
+			var outBuf bytes.Buffer
+			var stdout, stderr io.Writer
+
+			if jobs > 1 {
+				// Buffer output for parallel jobs
+				stdout = &outBuf
+				stderr = &outBuf
+				fmt.Printf(">> [%d/%d] building %s...\n", current, total, m.Name)
+			} else {
+				// Direct output for sequential jobs
+				stdout = cmd.OutOrStdout()
+				stderr = cmd.ErrOrStderr()
+				fmt.Printf("\n>> [%d/%d] building %s\n", current, total, m.Name)
+			}
+
 			// Pass autoFetch=false to individual builds because we've already fetched everything
-			if err := runBuildInDir(m.Path, profile, toolchainName, false); err != nil {
+			err := runBuild(m.Path, profile, toolchainName, false, stdout, stderr)
+			if err != nil {
+				if jobs > 1 {
+					// Show the buffered output on failure so the user knows what happened
+					fmt.Printf("\n!! build failed for %s\n", m.Name)
+					fmt.Println(outBuf.String())
+				}
 				return fmt.Errorf("build %s failed: %w", m.Name, err)
+			}
+
+			if jobs > 1 {
+				fmt.Printf(">> [%d/%d] %s complete\n", current, total, m.Name)
 			}
 			return nil
 		}
@@ -299,6 +408,8 @@ func init() {
 	workspaceCmd.AddCommand(workspaceBuildCmd)
 	workspaceCmd.AddCommand(workspaceCleanCmd)
 	workspaceCmd.AddCommand(workspaceFetchCmd)
+	workspaceCmd.AddCommand(workspaceInitCmd)
+	workspaceCmd.AddCommand(workspaceAddCmd)
 
 	workspaceBuildCmd.Flags().StringP("profile", "p", "debug", "build profile")
 	workspaceBuildCmd.Flags().String("toolchain", "auto", "toolchain selection")
