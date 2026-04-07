@@ -83,13 +83,42 @@ func scanCache(cacheRoot string, now time.Time) ([]Record, error) {
 			return err
 		}
 		parts := strings.Split(rel, string(filepath.Separator))
-		switch len(parts) {
-		case 3:
+		if len(parts) < 3 {
+			return nil
+		}
+
+		// Parts: name, version, abi_tag, [build_type]
+		name := parts[0]
+		version := parts[1]
+		abiTag := parts[2]
+		buildType := ""
+
+		if len(parts) == 4 {
+			if _, ok := validBuildTypes[parts[3]]; ok && hasFiles(path) {
+				buildType = parts[3]
+				records = append(records, Record{
+					Name:       name,
+					Version:    version,
+					ABITag:     abiTag,
+					BuildType:  buildType,
+					InstallDir: path,
+					Origin:     "unknown",
+					CreatedAt:  now,
+					UpdatedAt:  now,
+					LastSeenAt: now,
+				})
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if len(parts) == 3 {
+			// Check if this directory itself contains files and is not just a parent to build types
 			if hasFiles(path) && !hasTypedChildren(path) {
 				records = append(records, Record{
-					Name:       parts[0],
-					Version:    parts[1],
-					ABITag:     parts[2],
+					Name:       name,
+					Version:    version,
+					ABITag:     abiTag,
 					BuildType:  "",
 					InstallDir: path,
 					Origin:     "unknown",
@@ -97,24 +126,14 @@ func scanCache(cacheRoot string, now time.Time) ([]Record, error) {
 					UpdatedAt:  now,
 					LastSeenAt: now,
 				})
-				return filepath.SkipDir
+				// Don't SkipDir yet, because it might have legitimate typed children in standard depths.
+				// But wait, the current logic is to skip once we find a record.
+				// If we have a depth 3 record, and it has typed children, those children will be picked up
+				// as depth 4 records if we DON'T skip.
 			}
-		case 4:
-			if _, ok := validBuildTypes[parts[3]]; ok && hasFiles(path) {
-				records = append(records, Record{
-					Name:       parts[0],
-					Version:    parts[1],
-					ABITag:     parts[2],
-					BuildType:  parts[3],
-					InstallDir: path,
-					Origin:     "unknown",
-					CreatedAt:  now,
-					UpdatedAt:  now,
-					LastSeenAt: now,
-				})
-				return filepath.SkipDir
-			}
+			return nil
 		}
+
 		return nil
 	})
 	if err != nil {
