@@ -7,3 +7,4 @@ env.local.sh
 cstow.lock
 packages/
 /test-*
+local-repo/
