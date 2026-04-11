@@ -229,6 +229,53 @@ func TestResolveGitSourceNoRevDefaultsToMain(t *testing.T) {
 	assert.Equal(t, "", lf.Packages[0].Rev)
 }
 
+func TestResolveGitSourceEmptyVersionUsesRev(t *testing.T) {
+	r := New(nil, nil)
+	lf, err := r.Resolve([]config.Dependency{
+		{
+			Name:    "mylib",
+			Version: "",
+			Source:  "git",
+			Git:     "https://github.com/user/mylib.git",
+			Rev:     "v2.1.0",
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, lf.Packages, 1)
+	assert.Equal(t, "v2.1.0", lf.Packages[0].Version)
+	assert.Equal(t, "git:https://github.com/user/mylib.git", lf.Packages[0].Source)
+}
+
+func TestResolveGitSourceWildcardVersionUsesRev(t *testing.T) {
+	r := New(nil, nil)
+	lf, err := r.Resolve([]config.Dependency{
+		{
+			Name:    "mylib",
+			Version: "*",
+			Source:  "git",
+			Git:     "https://github.com/user/mylib.git",
+			Rev:     "main",
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, lf.Packages, 1)
+	assert.Equal(t, "main", lf.Packages[0].Version)
+}
+
+func TestResolveGitSourceNoVersionNoRev(t *testing.T) {
+	r := New(nil, nil)
+	lf, err := r.Resolve([]config.Dependency{
+		{
+			Name:   "mylib",
+			Source: "git",
+			Git:    "https://github.com/user/mylib.git",
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, lf.Packages, 1)
+	assert.Equal(t, "0.0.0", lf.Packages[0].Version)
+}
+
 func TestAddDependencyGit(t *testing.T) {
 	cfg := &config.Config{}
 	AddDependency(cfg, config.Dependency{

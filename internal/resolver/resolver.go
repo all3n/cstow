@@ -75,9 +75,14 @@ func (r *Resolver) Resolve(deps []config.Dependency) (*LockFile, error) {
 
 func (r *Resolver) resolveRecursive(deps []config.Dependency, locked map[string]LockEntry) error {
 	for _, dep := range deps {
-		constraint, err := semver.NewConstraint(dep.Version)
-		if err != nil {
-			return fmt.Errorf("invalid version constraint for %s: %w", dep.Name, err)
+		// Git sources with empty or wildcard versions skip semver constraint parsing
+		var constraint *semver.Constraints
+		if !(dep.Source == "git" && (dep.Version == "" || dep.Version == "*")) {
+			var err error
+			constraint, err = semver.NewConstraint(dep.Version)
+			if err != nil {
+				return fmt.Errorf("invalid version constraint for %s: %w", dep.Name, err)
+			}
 		}
 
 		// If already locked, check compatibility
@@ -85,9 +90,11 @@ func (r *Resolver) resolveRecursive(deps []config.Dependency, locked map[string]
 			if existing.Version == dep.Version {
 				continue // exact same constraint, already satisfied
 			}
-			existingVer, _ := semver.NewVersion(existing.Version)
-			if existingVer != nil && constraint.Check(existingVer) {
-				continue // already satisfied
+			if constraint != nil {
+				existingVer, _ := semver.NewVersion(existing.Version)
+				if existingVer != nil && constraint.Check(existingVer) {
+					continue // already satisfied
+				}
 			}
 			return fmt.Errorf("conflicting versions for %s: need %s, already locked %s",
 				dep.Name, dep.Version, existing.Version)
@@ -98,10 +105,13 @@ func (r *Resolver) resolveRecursive(deps []config.Dependency, locked map[string]
 
 		switch dep.Source {
 		case "git":
-			// Git source: version is the tag/rev, source records the URL
 			chosenVer = dep.Version
-			if dep.Version == "*" || dep.Version == "" {
-				chosenVer = "0.0.0"
+			if chosenVer == "*" || chosenVer == "" {
+				if dep.Rev != "" {
+					chosenVer = dep.Rev
+				} else {
+					chosenVer = "0.0.0"
+				}
 			}
 			source = "git:" + dep.Git
 		case "local":
