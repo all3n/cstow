@@ -19,7 +19,7 @@
 
 ## 2. Workspace 工作流 (Workspace Workflow)
 
-### [FEATURE] 缺少 `workspace init` 和 `workspace add`
+### [FIXED] 缺少 `workspace init` 和 `workspace add`
 - **现象**：目前必须手动编辑 `cstow.toml` 来配置 workspace。缺少 CLI 命令来快速初始化根项目或添加子模块。
 - **优先级**：中
 
@@ -34,6 +34,6 @@
 - **现象**：`sync` 逻辑可能会清理掉 `build_type` 为空（旧版本或 Header-only）的有效条目，导致本地索引失效。
 - **优先级**：中
 
-### [FEATURE] `cstow doctor` 环境诊断工具
+### [FIXED] `cstow doctor` 环境诊断工具
 - **现象**：缺少一键检测编译器、CMake、S3 凭据和缓存目录状态的手段。
 - **优先级**：低

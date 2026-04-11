@@ -1,6 +1,6 @@
 # cstow 路线图
 
-更新时间：2026-04-06
+更新时间：2026-04-11
 
 这份计划不再沿用旧版“Phase 1-7 全部完成”的写法，而是按当前代码现实拆成三类内容：
 
@@ -107,16 +107,17 @@
 ## Phase E — 扩展项 (进行中)
 
 - [x] 更多构建后端支持 (Done: Added Autotools support)
-- [ ] 实现 cache 清理策略 (MaxSizeGB / RetentionDays)
+- [x] 实现 cache 清理策略 (Done: `artifact prune` + `fetch` 自动按 `max_size_gb` / `retention_days` 触发清理)
 - [ ] Windows/MSVC 的更完整端到端验证
-- [ ] 更细粒度的 package authoring / lint / doctor 命令
+- [ ] 更细粒度的 package authoring / lint 命令
+- [x] `cstow doctor` 基础环境诊断命令 (Done: 检查 CMake、编译器、缓存、artifact DB、registry 连通性)
 
 ## 四、近期建议执行顺序
 
-1. **实现 Workspace 并行构建**：利用已有的拓扑排序，引入 worker pool 实现并行构建。
-2. **实现 Cache 清理策略**：真正利用全局配置中的 `max_size_gb` 和 `retention_days`。
-3. **优化错误诊断**：在构建失败时提供更清晰的日志指引和环境快照。
-4. **文档与示例更新**：同步最新的 Git source 依赖用法。
+1. **补齐 Windows/MSVC 端到端验证**：覆盖 fetch/install/build 主路径，确认 ABI 与 shared/debug 变体一致。
+2. **优化错误诊断**：继续增强构建失败时的日志指引和环境快照，尤其是跨平台差异。
+3. **补充 package authoring / lint 工具**：把 recipe 编写期错误尽量前移到静态检查。
+4. **文档与示例更新**：同步最新的 Git source、workspace、doctor 用法。
 
 ## 五、文档维护要求
 

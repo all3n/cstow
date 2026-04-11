@@ -8,3 +8,4 @@ cstow.lock
 packages/
 /test-*
 local-repo/
+.codex

@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,42 +15,57 @@ import (
 	"github.com/all3n/cstow/internal/config"
 	"github.com/all3n/cstow/internal/registry"
 	"github.com/all3n/cstow/internal/toolchain"
+	"github.com/aws/smithy-go"
 	"github.com/spf13/cobra"
 )
+
+type doctorArtifactStore interface {
+	List() ([]artifactdb.Record, error)
+	Close() error
+}
+
+var doctorOpenStore = func() (doctorArtifactStore, error) {
+	return artifactdb.OpenDefault()
+}
+
+var doctorNewRegistryClient = func(ctx context.Context, reg config.Registry) (*registry.S3Client, error) {
+	return registry.NewS3Client(ctx, reg)
+}
 
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Check system environment and configuration",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println(">> cstow doctor: checking system environment...")
+		out := cmd.OutOrStdout()
+		fmt.Fprintln(out, ">> cstow doctor: checking system environment...")
 
 		// 1. Check CMake
-		checkCMake()
+		checkCMake(out)
 
 		// 2. Check Toolchain
-		checkToolchain()
+		checkToolchain(out)
 
 		// 3. Check Cache & DB
-		checkStorage()
+		checkStorage(out)
 
 		// 4. Check Registry
-		checkRegistry()
+		checkRegistry(out)
 
-		fmt.Println("\n>> doctor check complete.")
+		fmt.Fprintln(out, "\n>> doctor check complete.")
 		return nil
 	},
 }
 
-func checkCMake() {
-	fmt.Print("[ ] CMake: ")
+func checkCMake(w io.Writer) {
+	fmt.Fprint(w, "[ ] CMake: ")
 	path, err := exec.LookPath("cmake")
 	if err != nil {
-		fmt.Println("❌ NOT FOUND. Please install CMake.")
+		fmt.Fprintln(w, "❌ NOT FOUND. Please install CMake.")
 		return
 	}
 	out, err := exec.Command("cmake", "--version").Output()
 	if err != nil {
-		fmt.Printf("❌ ERROR: %v\n", err)
+		fmt.Fprintf(w, "❌ ERROR: %v\n", err)
 		return
 	}
 	version := "unknown"
@@ -56,11 +73,11 @@ func checkCMake() {
 	if len(lines) > 0 {
 		version = lines[0]
 	}
-	fmt.Printf("✅ %s (%s)\n", version, path)
+	fmt.Fprintf(w, "✅ %s (%s)\n", version, path)
 }
 
-func checkToolchain() {
-	fmt.Print("[ ] Compiler: ")
+func checkToolchain(w io.Writer) {
+	fmt.Fprint(w, "[ ] Compiler: ")
 	global, _ := config.LoadGlobal()
 	tcCfg := config.Toolchain{}
 	if global != nil {
@@ -68,45 +85,52 @@ func checkToolchain() {
 	}
 	tc, err := toolchain.Detect(&tcCfg)
 	if err != nil {
-		fmt.Printf("❌ FAILED: %v\n", err)
+		fmt.Fprintf(w, "❌ FAILED: %v\n", err)
 		return
 	}
-	fmt.Printf("✅ %s %d.%d.%d (%s)\n", tc.Kind, tc.Version[0], tc.Version[1], tc.Version[2], tc.Target)
+	fmt.Fprintf(w, "✅ %s %d.%d.%d (%s)\n", tc.Kind, tc.Version[0], tc.Version[1], tc.Version[2], tc.Target)
 }
 
-func checkStorage() {
+func checkStorage(w io.Writer) {
+	global, _ := config.LoadGlobal()
+	cacheDir, err := resolveDoctorCacheDir(global)
+	if err != nil {
+		cacheDir = ""
+	}
+
 	// Cache Dir
-	home, _ := os.UserHomeDir()
-	cstowDir := filepath.Join(home, ".cstow")
-	cacheDir := filepath.Join(cstowDir, "cache")
-	fmt.Printf("[ ] Cache Dir: ")
+	fmt.Fprint(w, "[ ] Cache Dir: ")
 	if fi, err := os.Stat(cacheDir); err == nil && fi.IsDir() {
-		fmt.Printf("✅ %s\n", cacheDir)
+		fmt.Fprintf(w, "✅ %s\n", cacheDir)
 	} else {
-		fmt.Printf("⚠️  MISSING: %s (will be created on first fetch)\n", cacheDir)
+		fmt.Fprintf(w, "⚠️  MISSING: %s (will be created on first fetch)\n", cacheDir)
 	}
 
 	// DB Integrity
-	fmt.Print("[ ] Artifact DB: ")
-	store, err := artifactdb.OpenDefault()
+	fmt.Fprint(w, "[ ] Artifact DB: ")
+	store, err := doctorOpenStore()
 	if err != nil {
-		fmt.Printf("❌ ERROR: %v\n", err)
+		fmt.Fprintf(w, "❌ ERROR: %v\n", err)
 	} else {
 		defer store.Close()
 		list, err := store.List()
 		if err != nil {
-			fmt.Printf("❌ CORRUPTED: %v\n", err)
+			fmt.Fprintf(w, "❌ CORRUPTED: %v\n", err)
 		} else {
-			fmt.Printf("✅ OK (%d records index)\n", len(list))
+			fmt.Fprintf(w, "✅ OK (%d records index)\n", len(list))
 		}
 	}
 }
 
-func checkRegistry() {
-	fmt.Print("[ ] Registry: ")
+func checkRegistry(w io.Writer) {
+	fmt.Fprint(w, "[ ] Registry: ")
 	global, _ := config.LoadGlobal()
-	project, _ := config.Load("cstow.toml")
-	
+	project, err := config.Load("cstow.toml")
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(w, "⚠️  project config unreadable: %v\n", err)
+		return
+	}
+
 	var projectRegs []config.Registry
 	if project != nil {
 		projectRegs = project.Registries
@@ -114,35 +138,73 @@ func checkRegistry() {
 
 	reg, err := config.ResolvePrimaryRegistry(projectRegs, global)
 	if err != nil {
-		fmt.Println("⚪ NOT CONFIGURED (skipped)")
+		fmt.Fprintln(w, "⚪ NOT CONFIGURED (skipped)")
 		return
 	}
 
-	fmt.Printf("Testing %s ... ", reg.URL)
+	fmt.Fprintf(w, "Testing %s ... ", reg.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	client, err := registry.NewS3Client(ctx, reg)
+	client, err := doctorNewRegistryClient(ctx, reg)
 	if err != nil {
-		fmt.Printf("❌ CONNECT FAILED: %v\n", err)
+		fmt.Fprintf(w, "❌ CONNECT FAILED: %v\n", err)
 		return
 	}
 
 	// Try a simple operation
 	_, err = client.ListVersions(ctx, "nonexistent-pkg-for-test")
 	if err != nil && !isRegistryNotFoundError(err) {
-		fmt.Printf("❌ API FAILED: %v\n", err)
+		fmt.Fprintf(w, "❌ API FAILED: %v\n", err)
 		return
 	}
-	fmt.Println("✅ CONNECTED")
+	fmt.Fprintln(w, "✅ CONNECTED")
 }
 
 func isRegistryNotFoundError(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Many S3-like providers return "not found" or 404 for empty package lists
-	return true
+
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		switch strings.ToLower(apiErr.ErrorCode()) {
+		case "nosuchkey", "notfound", "404":
+			return true
+		case "nosuchbucket", "accessdenied", "invalidaccesskeyid", "signaturedoesnotmatch":
+			return false
+		}
+	}
+
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "404") || strings.Contains(lower, "not found")
+}
+
+func resolveDoctorCacheDir(global *config.Global) (string, error) {
+	if v := os.Getenv("CSTOW_CACHE_DIR"); v != "" {
+		return v, nil
+	}
+	if global != nil && global.Cache.Dir != "" {
+		return expandDoctorPath(global.Cache.Dir)
+	}
+	return expandDoctorPath("~/.cstow/cache")
+}
+
+func expandDoctorPath(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("home dir: %w", err)
+		}
+		if path == "~" {
+			return home, nil
+		}
+		return filepath.Join(home, path[2:]), nil
+	}
+	return path, nil
 }
 
 func splitLines(s string) []string {

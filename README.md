@@ -1,6 +1,6 @@
 # cstow Repository 系统说明
 
-更新时间：2026-04-06
+更新时间：2026-04-11
 
 > **⚠️ 核心开发准则**：代码的开发和演进必须无条件服从 `AGENTS.md` (主 PROMPT) 的约定，严格执行**每次功能迭代都是 MVP (最小可行性产品) 且必须可测试**的原则。**严禁碎片化提交，请在完整测好功能后再一次性提交。**
 
@@ -115,6 +115,19 @@
    - 用法：`cstow publish <name> --version <ver> --abi-tag <abi> --build-type <type>`
    - 从本地 artifact 索引或 cache 路径定位对应 `(name, version, abi_tag, build_type)` 后打包上传
    - 本模式下 `--version` / `--abi-tag` / `--build-type` 都是必填
+
+### 4. workspace 与诊断命令
+
+当前代码中这两组辅助命令也已连通：
+
+- `cstow workspace init [name]`
+  - 在当前目录初始化 workspace 根配置
+- `cstow workspace add <path>`
+  - 把已有 member 加入当前 workspace
+- `cstow workspace list|fetch|build|gen|clean`
+  - 支持成员枚举、统一抓取依赖、按依赖顺序构建、生成 CMake 文件和批量清理
+- `cstow doctor`
+  - 检查 CMake、编译器、缓存目录、artifact DB，以及 registry 基础连通性
 
 ## 三、全局配置：`~/.cstow/config.toml`
 

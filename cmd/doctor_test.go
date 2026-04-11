@@ -1,0 +1,113 @@
+package cmd
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/all3n/cstow/internal/config"
+	"github.com/aws/smithy-go"
+	"github.com/stretchr/testify/assert"
+)
+
+func TestResolveDoctorCacheDirPrefersEnvOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", filepath.Join(home, "env-cache"))
+
+	dir, err := resolveDoctorCacheDir(&config.Global{
+		Cache: config.GlobalCache{
+			Dir: "~/configured-cache",
+		},
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, "env-cache"), dir)
+}
+
+func TestResolveDoctorCacheDirExpandsConfiguredHomePath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", "")
+
+	dir, err := resolveDoctorCacheDir(&config.Global{
+		Cache: config.GlobalCache{
+			Dir: "~/configured-cache",
+		},
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, "configured-cache"), dir)
+}
+
+func TestResolveDoctorCacheDirFallsBackToDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", "")
+
+	dir, err := resolveDoctorCacheDir(nil)
+
+	assert.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, ".cstow", "cache"), dir)
+}
+
+func TestIsRegistryNotFoundErrorRecognizesOnlyMissingObjectCases(t *testing.T) {
+	assert.True(t, isRegistryNotFoundError(fakeDoctorAPIError{
+		code:    "NoSuchKey",
+		message: "manifest missing",
+	}))
+	assert.True(t, isRegistryNotFoundError(errors.New("404 not found")))
+	assert.False(t, isRegistryNotFoundError(fakeDoctorAPIError{
+		code:    "AccessDenied",
+		message: "signature mismatch",
+	}))
+	assert.False(t, isRegistryNotFoundError(fakeDoctorAPIError{
+		code:    "NoSuchBucket",
+		message: "bucket not found",
+	}))
+}
+
+func TestCheckRegistrySkipsMissingProjectConfig(t *testing.T) {
+	home := t.TempDir()
+	workdir := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_REGISTRY_URL", "")
+	t.Setenv("CSTOW_REGISTRY_KEY", "")
+	t.Setenv("CSTOW_REGISTRY_SECRET", "")
+
+	prevWD, err := os.Getwd()
+	assert.NoError(t, err)
+	assert.NoError(t, os.Chdir(workdir))
+	t.Cleanup(func() {
+		assert.NoError(t, os.Chdir(prevWD))
+	})
+
+	var out strings.Builder
+	checkRegistry(&out)
+
+	assert.Contains(t, out.String(), "NOT CONFIGURED")
+	assert.NotContains(t, out.String(), "project config unreadable")
+}
+
+type fakeDoctorAPIError struct {
+	code    string
+	message string
+}
+
+func (e fakeDoctorAPIError) Error() string {
+	return e.message
+}
+
+func (e fakeDoctorAPIError) ErrorCode() string {
+	return e.code
+}
+
+func (e fakeDoctorAPIError) ErrorMessage() string {
+	return e.message
+}
+
+func (e fakeDoctorAPIError) ErrorFault() smithy.ErrorFault {
+	return smithy.FaultClient
+}
