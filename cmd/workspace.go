@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/all3n/cstow/internal/cmakegen"
@@ -14,6 +15,36 @@ import (
 	"github.com/all3n/cstow/internal/workspace"
 	"github.com/spf13/cobra"
 )
+
+// moduleLogger buffers build output for a single module so that
+// parallel builds don't interleave their CMake output.
+type moduleLogger struct {
+	buf    bytes.Buffer
+	module string
+}
+
+func (l *moduleLogger) Write(p []byte) (n int, err error) {
+	return l.buf.Write(p)
+}
+
+// tailLines returns the last n non-empty lines from the buffer.
+func (l *moduleLogger) tailLines(n int) []string {
+	content := l.buf.String()
+	if content == "" {
+		return nil
+	}
+	raw := strings.Split(content, "\n")
+	var lines []string
+	for _, l := range raw {
+		if l != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return lines
+}
 
 var workspaceCmd = &cobra.Command{
 	Use:   "workspace",
@@ -208,13 +239,13 @@ var workspaceBuildCmd = &cobra.Command{
 			current := count
 			mu.Unlock()
 
-			var outBuf bytes.Buffer
+			logger := &moduleLogger{module: m.Name}
 			var stdout, stderr io.Writer
 
 			if jobs > 1 {
 				// Buffer output for parallel jobs
-				stdout = &outBuf
-				stderr = &outBuf
+				stdout = logger
+				stderr = logger
 				fmt.Printf(">> [%d/%d] building %s...\n", current, total, m.Name)
 			} else {
 				// Direct output for sequential jobs
@@ -227,9 +258,12 @@ var workspaceBuildCmd = &cobra.Command{
 			err := runBuild(m.Path, profile, toolchainName, false, stdout, stderr)
 			if err != nil {
 				if jobs > 1 {
-					// Show the buffered output on failure so the user knows what happened
-					fmt.Printf("\n!! build failed for %s\n", m.Name)
-					fmt.Println(outBuf.String())
+					// Show the last 20 lines of buffered output on failure
+					tail := logger.tailLines(20)
+					fmt.Fprintf(cmd.ErrOrStderr(), "\n=== %s FAILED ===\n", m.Name)
+					for _, line := range tail {
+						fmt.Fprintln(cmd.ErrOrStderr(), line)
+					}
 				}
 				return fmt.Errorf("build %s failed: %w", m.Name, err)
 			}
