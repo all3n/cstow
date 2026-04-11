@@ -23,20 +23,11 @@ var addNewRegistryValidator = func(ctx context.Context, reg config.Registry) (ad
 }
 
 var addNewRepoFinder = func(extraPaths []string) (*repository.Finder, error) {
-	paths := extraPaths
-	if len(paths) == 0 {
-		paths = findProjectRootPaths()
+	paths, err := effectiveRepositoryPaths(findProjectRoot(), extraPaths)
+	if err != nil {
+		return nil, err
 	}
 	return repository.NewFinderWithPaths(paths), nil
-}
-
-func findProjectRootPaths() []string {
-	root := findProjectRoot()
-	global, _ := config.LoadGlobal()
-	if global != nil {
-		return global.RepositoryPaths(root)
-	}
-	return []string{root}
 }
 
 var addCmd = &cobra.Command{
@@ -45,6 +36,7 @@ var addCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		defer resetAddFlagState(cmd)
+		defer resetRootFlagState(cmd)
 		cfgPath := "cstow.toml"
 		if _, err := os.Stat(cfgPath); err != nil {
 			return fmt.Errorf("cstow.toml not found in current directory")
@@ -224,25 +216,13 @@ func validateRepoDependency(name, version string, repoOverrides []string) error 
 }
 
 func resetAddFlagState(cmd *cobra.Command) {
-	resetAddFlag := func(name string) {
-		flag := cmd.Flags().Lookup(name)
-		if flag == nil {
-			return
-		}
-		if replacer, ok := flag.Value.(interface{ Replace([]string) error }); ok {
-			_ = replacer.Replace(nil)
-		} else {
-			_ = flag.Value.Set(flag.DefValue)
-		}
-		flag.Changed = false
-	}
-	resetAddFlag("source")
-	resetAddFlag("build-type")
-	resetAddFlag("git-url")
-	resetAddFlag("tag")
-	resetAddFlag("cmake-define")
-	resetAddFlag("cxx-flags")
-	resetAddFlag("link-flags")
+	resetFlagState(cmd, "source")
+	resetFlagState(cmd, "build-type")
+	resetFlagState(cmd, "git-url")
+	resetFlagState(cmd, "tag")
+	resetFlagState(cmd, "cmake-define")
+	resetFlagState(cmd, "cxx-flags")
+	resetFlagState(cmd, "link-flags")
 }
 
 func init() {

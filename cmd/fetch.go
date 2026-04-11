@@ -40,6 +40,7 @@ var fetchCmd = &cobra.Command{
 	Short: "Fetch dependencies into local cache, falling back to source builds when needed",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		defer resetFetchFlagState(cmd)
+		defer resetRootFlagState(cmd)
 
 		artifactHashID, _ := cmd.Flags().GetString("artifact")
 		if strings.TrimSpace(artifactHashID) != "" {
@@ -71,14 +72,16 @@ var fetchCmd = &cobra.Command{
 }
 
 type fetchOptions struct {
-	WorkDir        string
-	LockPath       string
-	DepsDir        string
-	Profile        string
-	Toolchain      string
-	SourceFallback bool
-	Stdout         io.Writer
-	Stderr         io.Writer
+	WorkDir          string
+	LockPath         string
+	DepsDir          string
+	ExtraRepos       []string
+	OverrideRegistry string
+	Profile          string
+	Toolchain        string
+	SourceFallback   bool
+	Stdout           io.Writer
+	Stderr           io.Writer
 }
 
 func runFetch(cfg *config.Config, opts fetchOptions) error {
@@ -96,8 +99,14 @@ func runFetch(cfg *config.Config, opts fetchOptions) error {
 	}
 
 	// Persistent flags (from rootCmd)
-	extraRepos, _ := rootCmd.PersistentFlags().GetStringSlice("repository")
-	overrideRegistry, _ := rootCmd.PersistentFlags().GetString("registry")
+	extraRepos := opts.ExtraRepos
+	if len(extraRepos) == 0 {
+		extraRepos, _ = rootCmd.PersistentFlags().GetStringSlice("repository")
+	}
+	overrideRegistry := opts.OverrideRegistry
+	if overrideRegistry == "" {
+		overrideRegistry, _ = rootCmd.PersistentFlags().GetString("registry")
+	}
 
 	// Acquire file lock for the project's dependency operations.
 	// We use a hidden .cstow.lock.lock file to manage access to cstow.lock and cstow_deps.
@@ -412,24 +421,8 @@ func downloadFromManifestArtifact(ctx context.Context, downloader artifactDownlo
 	return downloader.Download(ctx, name, version, artifact.ABITag, artifact.BuildType, artifact.HashID)
 }
 
-
-
-
 func resetFetchFlagState(cmd *cobra.Command) {
-	resetFetchFlag := func(name string) {
-		flag := cmd.Flags().Lookup(name)
-		if flag == nil {
-			return
-		}
-		if replacer, ok := flag.Value.(interface{ Replace([]string) error }); ok {
-			_ = replacer.Replace(nil)
-		} else {
-			_ = flag.Value.Set(flag.DefValue)
-		}
-		flag.Changed = false
-	}
-	resetFetchFlag("artifact")
-	resetFetchFlag("toolchain")
-	resetFetchFlag("source-fallback")
+	resetFlagState(cmd, "artifact")
+	resetFlagState(cmd, "toolchain")
+	resetFlagState(cmd, "source-fallback")
 }
-

@@ -15,6 +15,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func writeRepositoryDefinition(t *testing.T, repoRoot, name string, versions []string) {
+	t.Helper()
+
+	if len(versions) == 0 {
+		versions = []string{"1.0.0"}
+	}
+
+	pkgDir := filepath.Join(repoRoot, string(name[0]), name)
+	require.NoError(t, os.MkdirAll(pkgDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(pkgDir, "package.toml"), []byte(`
+versions = ["`+versions[0]+`"]
+
+[package]
+name = "`+name+`"
+description = "test package"
+`), 0o644))
+}
+
 // fakeAddRegistryValidator implements addRegistryValidator for tests.
 type fakeAddRegistryValidator struct {
 	getManifestFunc  func(ctx context.Context, pkg, version string) (*registry.Manifest, error)
@@ -180,6 +198,31 @@ func TestAddValidatesRepoDependency(t *testing.T) {
 	err := rootCmd.Execute()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found in repository")
+}
+
+func TestAddRepositoryOverrideSupplementsConfiguredRepositories(t *testing.T) {
+	setupAddTest(t)
+
+	home := os.Getenv("HOME")
+	configPath := filepath.Join(home, ".cstow", "config.toml")
+	globalRepo := filepath.Join(home, "global-repo")
+	overrideRepo := filepath.Join(home, "override-repo")
+	writeRepositoryDefinition(t, globalRepo, "globalpkg", []string{"1.0.0"})
+	require.NoError(t, os.MkdirAll(overrideRepo, 0o755))
+	require.NoError(t, os.WriteFile(configPath, []byte(`
+[[repositories]]
+name = "global"
+path = "`+globalRepo+`"
+priority = 10
+`), 0o644))
+
+	rootCmd.SetArgs([]string{"add", "globalpkg@1.0.0", "--source", "local", "--repository", overrideRepo})
+	require.NoError(t, rootCmd.Execute())
+
+	cfg, err := config.Load("cstow.toml")
+	require.NoError(t, err)
+	require.Len(t, cfg.Dependencies, 1)
+	assert.Equal(t, "globalpkg", cfg.Dependencies[0].Name)
 }
 
 func TestAddRejectsInvalidBuildType(t *testing.T) {

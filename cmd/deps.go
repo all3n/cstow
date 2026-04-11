@@ -130,6 +130,17 @@ func (c *repositoryInstallContext) detectedABITag() string {
 	return abi.DetectFromToolchain(c.Toolchain.Kind, c.Toolchain.Version, c.Std).String()
 }
 
+func (c *repositoryInstallContext) repositoryPaths(projectRoot string) []string {
+	if c == nil {
+		return nil
+	}
+	var basePaths []string
+	if c.Global != nil {
+		basePaths = c.Global.RepositoryPaths(projectRoot)
+	}
+	return mergeRepositoryPaths(basePaths, c.ExtraRepos)
+}
+
 func installFromRepository(name, versionConstraint string, opts repositoryInstallOptions) (*repositoryInstallResult, error) {
 	if opts.Context == nil {
 		return nil, fmt.Errorf("repository install context is required")
@@ -141,10 +152,7 @@ func installFromRepository(name, versionConstraint string, opts repositoryInstal
 		opts.Stderr = os.Stderr
 	}
 
-	repoPaths := opts.Context.ExtraRepos
-	if len(repoPaths) == 0 {
-		repoPaths = opts.Context.Global.RepositoryPaths(findProjectRoot())
-	}
+	repoPaths := opts.Context.repositoryPaths(findProjectRoot())
 	finder := repository.NewFinderWithPaths(repoPaths)
 	pkg, err := finder.Find(name, versionConstraint)
 	if err != nil {

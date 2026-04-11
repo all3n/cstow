@@ -82,6 +82,8 @@
 - `fetch`：优先从 registry 下载预编译包到 cache，缺失时可回退到 git source 或 repository recipe 源码构建，并在项目下生成 `./cstow_deps/<pkg>` 符号链接
 - `build`：运行项目自身的 CMake，并把 `cstow_deps` 注入到 `CMAKE_PREFIX_PATH`。支持 `--fetch` 自动补全缺失依赖
 
+这些命令现在都支持用重复的 `--repository <path>` 临时追加 repository 搜索路径；这些路径会以更高优先级参与当前命令解析，但不会替代全局或项目级 repository 配置。
+
 ### 2. repository recipe 路径
 
 这是今天 repository 系统真正连通的路径：
@@ -99,6 +101,8 @@
 - 本地构建
 - 安装到 `~/.cstow/cache/<name>/<version>/<abi_tag>/<build_type>/`
 - 索引到本地 artifact DB (`~/.cstow/cstow.db`)
+
+同样支持通过 `--repository <path>` 临时追加一次性测试仓库，并优先于全局配置中的 repository 路径。
 
 ### 3. publish 的两种当前模式
 

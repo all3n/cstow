@@ -14,6 +14,7 @@ var installCmd = &cobra.Command{
 	Short: "Build a package from source and install to local cache",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		defer resetRootFlagState(cmd)
 		profile, _ := cmd.Flags().GetString("profile")
 		force, _ := cmd.Flags().GetBool("force")
 		buildType, _ := cmd.Flags().GetString("type")
@@ -58,7 +59,7 @@ var installCmd = &cobra.Command{
 			}
 		}
 
-		extraRepos, _ := rootCmd.PersistentFlags().GetStringSlice("repository")
+		extraRepos, _ := cmd.Flags().GetStringSlice("repository")
 
 		ctx, err := newRepositoryInstallContext(projectCfg, profile, toolchainName, extraRepos)
 		if err != nil {
