@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/all3n/cstow/internal/abi"
@@ -31,6 +32,7 @@ type repositoryInstallOptions struct {
 	ForceShared bool // parent is shared, force all transitive deps to shared
 	Stdout      io.Writer
 	Stderr      io.Writer
+	trace       *repositoryInstallTrace
 }
 
 type repositoryInstallResult struct {
@@ -40,6 +42,53 @@ type repositoryInstallResult struct {
 	BuildType  string
 	RepoPath   string
 	Cached     bool
+}
+
+type repositoryInstallTrace struct {
+	active map[string]int
+	stack  []string
+}
+
+func newRepositoryInstallTrace() *repositoryInstallTrace {
+	return &repositoryInstallTrace{
+		active: make(map[string]int),
+	}
+}
+
+func (t *repositoryInstallTrace) push(node string) error {
+	if idx, ok := t.active[node]; ok {
+		cycle := append(append([]string{}, t.stack[idx:]...), node)
+		return fmt.Errorf("repository dependency cycle detected: %s", strings.Join(cycle, " -> "))
+	}
+	t.active[node] = len(t.stack)
+	t.stack = append(t.stack, node)
+	return nil
+}
+
+func (t *repositoryInstallTrace) pop(node string) {
+	if t == nil || len(t.stack) == 0 {
+		return
+	}
+	delete(t.active, node)
+	t.stack = t.stack[:len(t.stack)-1]
+}
+
+func repositoryInstallNode(name, version, buildType string) string {
+	return fmt.Sprintf("%s@%s[%s]", name, version, displayBuildType(buildType))
+}
+
+func wrapRepositoryInstallStage(node, stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("repository package %s: %s: %w", node, stage, err)
+}
+
+func wrapGitInstallStage(node, stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("git dependency %s: %s: %w", node, stage, err)
 }
 
 type gitSourceOptions struct {
@@ -151,6 +200,9 @@ func installFromRepository(name, versionConstraint string, opts repositoryInstal
 	if opts.Stderr == nil {
 		opts.Stderr = os.Stderr
 	}
+	if opts.trace == nil {
+		opts.trace = newRepositoryInstallTrace()
+	}
 
 	repoPaths := opts.Context.repositoryPaths(findProjectRoot())
 	finder := repository.NewFinderWithPaths(repoPaths)
@@ -160,6 +212,7 @@ func installFromRepository(name, versionConstraint string, opts repositoryInstal
 	}
 
 	merged := repository.Merge(pkg.Def, pkg.Override, opts.Context.Toolchain.Kind, opts.Context.Profile, runtime.GOOS)
+	merged = applyGlobalBuildFlagsToMergedConfig(merged, opts.Context.Global)
 	if opts.BuildType != "" {
 		merged.BuildType = opts.BuildType
 	}
@@ -171,6 +224,12 @@ func installFromRepository(name, versionConstraint string, opts repositoryInstal
 		return nil, err
 	}
 	merged.BuildType = buildType
+
+	node := repositoryInstallNode(name, pkg.Version, buildType)
+	if err := opts.trace.push(node); err != nil {
+		return nil, err
+	}
+	defer opts.trace.pop(node)
 
 	abiTag := opts.Context.detectedABITag()
 	cache := resolver.NewFSCache()
@@ -199,28 +258,30 @@ func installFromRepository(name, versionConstraint string, opts repositoryInstal
 	}
 
 	if merged.BuildType != "header-only" && !builder.IsCmakeInstalled() {
-		return nil, fmt.Errorf("cmake not found on PATH")
+		return nil, fmt.Errorf("repository package %s: build prerequisites: cmake not found on PATH", node)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "cstow-build-*")
 	if err != nil {
-		return nil, fmt.Errorf("create temp dir: %w", err)
+		return nil, wrapRepositoryInstallStage(node, "create temp dir", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	sourcePath, err := repository.FetchSource(pkg.Def.Source, pkg.Override, pkg.Version, expectedSHA256(pkg), tmpDir)
+	sourcePath, err := repository.FetchSourceWithOptions(pkg.Def.Source, pkg.Override, pkg.Version, expectedSHA256(pkg), tmpDir, repository.FetchOptions{
+		Network: globalNetworkConfig(opts.Context.Global),
+	})
 	if err != nil {
-		return nil, fmt.Errorf("fetch source: %w", err)
+		return nil, wrapRepositoryInstallStage(node, "fetch source", err)
 	}
 
 	if merged.Patch != "" {
 		if !builder.IsPatchInstalled() {
-			return nil, fmt.Errorf("patch command not found on PATH (required to apply %s)", merged.Patch)
+			return nil, fmt.Errorf("repository package %s: apply patch %s: patch command not found on PATH", node, merged.Patch)
 		}
 		patchPath := filepath.Join(pkg.PackageDir, "patches", merged.Patch)
 		fmt.Fprintf(opts.Stdout, ">> applying patch %s\n", merged.Patch)
 		if err := builder.ApplyPatch(patchPath, sourcePath); err != nil {
-			return nil, fmt.Errorf("apply patch: %w", err)
+			return nil, wrapRepositoryInstallStage(node, "apply patch "+merged.Patch, err)
 		}
 	}
 
@@ -244,7 +305,7 @@ func installFromRepository(name, versionConstraint string, opts repositoryInstal
 			depOpts.Force = false // default cache-first for dependencies
 			depResult, err := installFromRepository(dep.Name, dep.Version, depOpts)
 			if err != nil {
-				return nil, fmt.Errorf("dependency %s@%s: %w", dep.Name, dep.Version, err)
+				return nil, wrapRepositoryInstallStage(node, fmt.Sprintf("dependency %s@%s", dep.Name, dep.Version), err)
 			}
 			prefixPaths = append(prefixPaths, depResult.InstallDir)
 		}
@@ -262,7 +323,7 @@ func installFromRepository(name, versionConstraint string, opts repositoryInstal
 		Stderr:      opts.Stderr,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("build %s %s: %w", name, pkg.Version, err)
+		return nil, wrapRepositoryInstallStage(node, "build", err)
 	}
 
 	if err := indexSuccessfulArtifact(cache, indexedArtifact{
@@ -300,6 +361,7 @@ func installFromGitSource(name, version, gitURL, rev string, opts gitSourceOptio
 	if err := validateBuildType(buildType); err != nil {
 		return nil, err
 	}
+	node := repositoryInstallNode(name, version, buildType)
 
 	abiTag := opts.Context.detectedABITag()
 	cache := resolver.NewFSCache()
@@ -327,7 +389,7 @@ func installFromGitSource(name, version, gitURL, rev string, opts gitSourceOptio
 
 	tmpDir, err := os.MkdirTemp("", "cstow-git-*")
 	if err != nil {
-		return nil, fmt.Errorf("create temp dir: %w", err)
+		return nil, wrapGitInstallStage(node, "create temp dir", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
@@ -335,7 +397,7 @@ func installFromGitSource(name, version, gitURL, rev string, opts gitSourceOptio
 		rev = "main"
 	}
 	if err := fetchGitCloneFunc(gitURL, rev, tmpDir); err != nil {
-		return nil, fmt.Errorf("git clone %s@%s: %w", gitURL, rev, err)
+		return nil, wrapGitInstallStage(node, fmt.Sprintf("clone source from %s@%s", gitURL, rev), err)
 	}
 
 	merged := &repository.MergedBuildConfig{
@@ -345,6 +407,7 @@ func installFromGitSource(name, version, gitURL, rev string, opts gitSourceOptio
 		CXXFlags:     opts.CMake.CXXFlags,
 		LinkFlags:    opts.CMake.LinkFlags,
 	}
+	merged = applyGlobalBuildFlagsToMergedConfig(merged, opts.Context.Global)
 
 	result, err := builder.Build(builder.Options{
 		SourcePath: tmpDir,
@@ -357,7 +420,7 @@ func installFromGitSource(name, version, gitURL, rev string, opts gitSourceOptio
 		Stderr:     opts.Stderr,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("build %s %s: %w", name, version, err)
+		return nil, wrapGitInstallStage(node, "build", err)
 	}
 
 	if err := indexSuccessfulArtifact(cache, indexedArtifact{
@@ -389,6 +452,43 @@ func gitCMakeFromLock(cfg *config.Config, name string) config.GitCMake {
 		}
 	}
 	return config.GitCMake{}
+}
+
+func globalNetworkConfig(global *config.Global) *config.GlobalNetwork {
+	if global == nil {
+		return nil
+	}
+	return &global.Network
+}
+
+func applyGlobalBuildFlagsToMergedConfig(merged *repository.MergedBuildConfig, global *config.Global) *repository.MergedBuildConfig {
+	if merged == nil {
+		return nil
+	}
+	if global == nil {
+		return merged
+	}
+
+	flags := global.Build.Flags
+	if len(flags.Defines) == 0 && len(flags.CXXFlags) == 0 && len(flags.LinkFlags) == 0 {
+		return merged
+	}
+
+	out := &repository.MergedBuildConfig{
+		System:          merged.System,
+		CMakeDefines:    append(slices.Clone(flags.Defines), merged.CMakeDefines...),
+		AutotoolsArgs:   slices.Clone(merged.AutotoolsArgs),
+		AutotoolsScript: merged.AutotoolsScript,
+		CFlags:          slices.Clone(merged.CFlags),
+		CXXFlags:        append(slices.Clone(flags.CXXFlags), merged.CXXFlags...),
+		LinkFlags:       append(slices.Clone(flags.LinkFlags), merged.LinkFlags...),
+		IncludeDirs:     slices.Clone(merged.IncludeDirs),
+		Libs:            slices.Clone(merged.Libs),
+		InstallTargets:  slices.Clone(merged.InstallTargets),
+		Patch:           merged.Patch,
+		BuildType:       merged.BuildType,
+	}
+	return out
 }
 
 func candidateABITags(lockTag, detectedTag string) []string {

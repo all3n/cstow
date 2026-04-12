@@ -235,6 +235,63 @@ func applyDefaults(g *Global) {
 	}
 }
 
+// ResolveCacheDir returns the effective cache root with precedence:
+// CSTOW_CACHE_DIR > global cache.dir > default ~/.cstow/cache.
+func ResolveCacheDir(global *Global) (string, error) {
+	if v := os.Getenv("CSTOW_CACHE_DIR"); v != "" {
+		return v, nil
+	}
+
+	dir := "~/.cstow/cache"
+	if global != nil && global.Cache.Dir != "" {
+		dir = global.Cache.Dir
+	}
+	return expandHomeDir(dir)
+}
+
+// ResolveStateDir returns the directory used for state files such as the
+// local artifact database. By default it is the parent of the resolved cache
+// directory, so the default cache ~/.cstow/cache maps to ~/.cstow.
+func ResolveStateDir(global *Global) (string, error) {
+	cacheDir, err := ResolveCacheDir(global)
+	if err != nil {
+		return "", err
+	}
+	if cacheDir == "" {
+		return "", nil
+	}
+	return filepath.Dir(cacheDir), nil
+}
+
+// ResolveArtifactDBPath returns the default sqlite artifact DB path.
+func ResolveArtifactDBPath(global *Global) (string, error) {
+	stateDir, err := ResolveStateDir(global)
+	if err != nil {
+		return "", err
+	}
+	if stateDir == "" {
+		return "", nil
+	}
+	return filepath.Join(stateDir, "cstow.db"), nil
+}
+
+func expandHomeDir(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	if path == "~" || len(path) >= 2 && path[:2] == "~/" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("home dir: %w", err)
+		}
+		if path == "~" {
+			return home, nil
+		}
+		return filepath.Join(home, path[2:]), nil
+	}
+	return path, nil
+}
+
 // ResolvePrimaryRegistry picks the effective registry configuration for commands
 // that operate on a single registry.
 func ResolvePrimaryRegistry(projectRegistries []Registry, global *Global) (Registry, error) {

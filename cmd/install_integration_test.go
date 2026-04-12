@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/all3n/cstow/internal/artifactdb"
+	"github.com/all3n/cstow/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -226,6 +227,58 @@ profile = "debug"
 	require.NotEmpty(t, matches)
 }
 
+func TestInstallFromRepositoryDetectsDependencyCycles(t *testing.T) {
+	requireTool(t, "git")
+
+	fakeHome := t.TempDir()
+	cacheDir := filepath.Join(fakeHome, ".cstow", "cache")
+	repoRoot := filepath.Join(fakeHome, "repository")
+	sourceRepo := createTaggedLibraryRepo(t)
+
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("CSTOW_CACHE_DIR", cacheDir)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(fakeHome, ".cstow"), 0o755))
+	writeRepositoryPackage(t, repoRoot, "cycle-a", sourceRepo, packageOptions{
+		buildType: "header-only",
+		dependencies: []config.Dependency{
+			{Name: "cycle-b", Version: "^1", BuildType: "header-only"},
+		},
+	})
+	writeRepositoryPackage(t, repoRoot, "cycle-b", sourceRepo, packageOptions{
+		buildType: "header-only",
+		dependencies: []config.Dependency{
+			{Name: "cycle-a", Version: "^1", BuildType: "header-only"},
+		},
+	})
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(fakeHome, ".cstow", "config.toml"),
+		[]byte(fmt.Sprintf(`
+[[repositories]]
+name = "local"
+path = %q
+priority = 10
+
+[defaults]
+std = "c++17"
+profile = "debug"
+`, repoRoot)),
+		0o644,
+	))
+
+	ctx, err := newRepositoryInstallContext(nil, "debug", "auto", nil)
+	require.NoError(t, err)
+
+	_, err = installFromRepository("cycle-a", "^1", repositoryInstallOptions{
+		Context: ctx,
+		Force:   true,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "repository dependency cycle detected")
+	assert.Contains(t, err.Error(), "cycle-a@1.0.0[header-only] -> cycle-b@1.0.0[header-only] -> cycle-a@1.0.0[header-only]")
+}
+
 func requireTool(t *testing.T, name string) {
 	t.Helper()
 	if _, err := exec.LookPath(name); err != nil {
@@ -281,8 +334,10 @@ int mini() {
 }
 
 type packageOptions struct {
-	buildType string
-	defines   []string
+	buildType    string
+	buildSystem  string
+	defines      []string
+	dependencies []config.Dependency
 }
 
 func writeRepositoryPackage(t *testing.T, repoRoot, name, sourceRepo string, opts packageOptions) {
@@ -290,6 +345,10 @@ func writeRepositoryPackage(t *testing.T, repoRoot, name, sourceRepo string, opt
 
 	pkgDir := filepath.Join(repoRoot, string(name[0]), name)
 	require.NoError(t, os.MkdirAll(pkgDir, 0o755))
+	buildSystem := opts.buildSystem
+	if buildSystem == "" {
+		buildSystem = "cmake"
+	}
 	content := fmt.Sprintf(`
 versions = ["1.0.0"]
 
@@ -303,9 +362,9 @@ url = %q
 tag_template = "{version}"
 
 [build]
-system = "cmake"
+system = %q
 type = %q
-`, name, sourceRepo, opts.buildType)
+`, name, sourceRepo, buildSystem, opts.buildType)
 	if len(opts.defines) > 0 {
 		content += "\n[build.cmake]\ndefines = ["
 		for i, d := range opts.defines {
@@ -315,6 +374,19 @@ type = %q
 			content += fmt.Sprintf("%q", d)
 		}
 		content += "]\n"
+	}
+	for _, dep := range opts.dependencies {
+		content += "\n[[dependencies]]\n"
+		content += fmt.Sprintf("name = %q\n", dep.Name)
+		if dep.Version != "" {
+			content += fmt.Sprintf("version = %q\n", dep.Version)
+		}
+		if dep.Source != "" {
+			content += fmt.Sprintf("source = %q\n", dep.Source)
+		}
+		if dep.BuildType != "" {
+			content += fmt.Sprintf("build_type = %q\n", dep.BuildType)
+		}
 	}
 	require.NoError(t, os.WriteFile(filepath.Join(pkgDir, "package.toml"), []byte(content), 0o644))
 }

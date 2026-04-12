@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -139,4 +140,91 @@ profile = "debug"
 	out, err := exec.Command(exePath).Output()
 	require.NoError(t, err)
 	assert.True(t, strings.Contains(string(out), "patched"), "Expected output to contain 'patched', got %q", string(out))
+}
+
+func TestInstallFromRepositoryArchiveHonorsConfiguredRetries(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	requireTool(t, "cmake")
+	requireTool(t, "g++")
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	files := map[string]string{
+		"mini-1.0.0/CMakeLists.txt": `cmake_minimum_required(VERSION 3.15)
+project(mini-retry LANGUAGES CXX)
+add_executable(mini main.cpp)
+install(TARGETS mini RUNTIME DESTINATION bin)
+`,
+		"mini-1.0.0/main.cpp": `int main() { return 0; }`,
+	}
+	for name, content := range files {
+		hdr := &tar.Header{Name: name, Mode: 0644, Size: int64(len(content))}
+		require.NoError(t, tw.WriteHeader(hdr))
+		_, err := tw.Write([]byte(content))
+		require.NoError(t, err)
+	}
+	require.NoError(t, tw.Close())
+	require.NoError(t, gw.Close())
+
+	archiveData := buf.Bytes()
+	var attempts atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) < 3 {
+			http.Error(w, "retry", http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write(archiveData)
+	}))
+	defer ts.Close()
+
+	fakeHome := t.TempDir()
+	cacheDir := filepath.Join(fakeHome, ".cstow", "cache")
+	repoRoot := filepath.Join(fakeHome, "repository")
+	pkgDir := filepath.Join(repoRoot, "m", "mini-retry")
+	require.NoError(t, os.MkdirAll(pkgDir, 0755))
+
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("CSTOW_CACHE_DIR", "")
+
+	require.NoError(t, os.WriteFile(filepath.Join(pkgDir, "package.toml"), []byte(fmt.Sprintf(`
+versions = ["1.0.0"]
+[package]
+name = "mini-retry"
+[source]
+type = "archive"
+url_template = %q
+[build]
+system = "cmake"
+type = "static"
+`, ts.URL+"/mini-1.0.0.tar.gz")), 0644))
+
+	require.NoError(t, os.MkdirAll(filepath.Join(fakeHome, ".cstow"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(fakeHome, ".cstow", "config.toml"), []byte(fmt.Sprintf(`
+[[repositories]]
+name = "local"
+path = %q
+priority = 10
+[defaults]
+std = "c++17"
+profile = "debug"
+[network]
+retries = 3
+timeout_sec = 2
+[cache]
+dir = %q
+`, repoRoot, cacheDir)), 0644))
+
+	ctx, err := newRepositoryInstallContext(nil, "debug", "gcc", nil)
+	require.NoError(t, err)
+
+	result, err := installFromRepository("mini-retry", "1.0.0", repositoryInstallOptions{
+		Context: ctx,
+		Force:   true,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int32(3), attempts.Load())
+	assert.FileExists(t, filepath.Join(result.InstallDir, "bin", "mini"))
 }

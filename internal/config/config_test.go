@@ -117,6 +117,62 @@ retries = 5
 	assert.Equal(t, 5, g.Network.Retries)
 }
 
+func TestResolveCacheDirPrefersEnvOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", filepath.Join(home, "env-cache"))
+
+	dir, err := ResolveCacheDir(&Global{
+		Cache: GlobalCache{Dir: "~/configured-cache"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, "env-cache"), dir)
+}
+
+func TestResolveCacheDirExpandsConfiguredHomePath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", "")
+
+	dir, err := ResolveCacheDir(&Global{
+		Cache: GlobalCache{Dir: "~/configured-cache"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, "configured-cache"), dir)
+}
+
+func TestResolveCacheDirFallsBackToDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", "")
+
+	dir, err := ResolveCacheDir(nil)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, ".cstow", "cache"), dir)
+}
+
+func TestResolveArtifactDBPathFollowsResolvedCacheParent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", "")
+
+	path, err := ResolveArtifactDBPath(&Global{
+		Cache: GlobalCache{Dir: "~/configured-cache"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, "cstow.db"), path)
+}
+
+func TestResolveArtifactDBPathFallsBackToDefaultStateDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", "")
+
+	path, err := ResolveArtifactDBPath(nil)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, ".cstow", "cstow.db"), path)
+}
+
 func TestGlobal_RepositoryPaths_PriorityOrder(t *testing.T) {
 	orig := os.Getenv("HOME")
 	t.Cleanup(func() { os.Setenv("HOME", orig) })

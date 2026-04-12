@@ -5,12 +5,16 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/all3n/cstow/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -112,4 +116,49 @@ func TestFetchArchive(t *testing.T) {
 	// Pass a URL that ends in .tar.gz by adding a dummy path segment
 	require.NoError(t, FetchArchive(ts.URL+"/file.tar.gz", "", dest))
 	assert.FileExists(t, filepath.Join(dest, "hello.txt")) // stripped
+}
+
+func TestFetchArchiveHonorsRetries(t *testing.T) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	hdr := &tar.Header{Name: "pkg/hello.txt", Mode: 0644, Size: 5}
+	require.NoError(t, tw.WriteHeader(hdr))
+	_, err := tw.Write([]byte("hello"))
+	require.NoError(t, err)
+	require.NoError(t, tw.Close())
+	require.NoError(t, gw.Close())
+
+	var attempts atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) < 3 {
+			http.Error(w, "try again", http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write(buf.Bytes())
+	}))
+	defer ts.Close()
+
+	dest := t.TempDir()
+	err = FetchArchiveWithOptions(ts.URL+"/file.tar.gz", "", dest, FetchOptions{
+		Network: &config.GlobalNetwork{Retries: 3, Timeout: 2},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int32(3), attempts.Load())
+	assert.FileExists(t, filepath.Join(dest, "hello.txt"))
+}
+
+func TestFetchArchiveHonorsTimeout(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(1500 * time.Millisecond)
+		_, _ = io.WriteString(w, "late")
+	}))
+	defer ts.Close()
+
+	dest := t.TempDir()
+	err := FetchArchiveWithOptions(ts.URL+"/file.tar.gz", "", dest, FetchOptions{
+		Network: &config.GlobalNetwork{Timeout: 1, Retries: 1},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deadline exceeded")
 }

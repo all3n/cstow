@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/all3n/cstow/internal/config"
+	"github.com/all3n/cstow/internal/repository"
 	"github.com/all3n/cstow/internal/resolver"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -129,4 +130,28 @@ func TestDependencyLinkTarget(t *testing.T) {
 		Source: "local:../myutil",
 		Path:   "../myutil",
 	}, cachePath))
+}
+
+func TestApplyGlobalBuildFlagsToMergedConfigPrependsDefaults(t *testing.T) {
+	merged := &repository.MergedBuildConfig{
+		System:       "cmake",
+		BuildType:    "static",
+		CMakeDefines: []string{"PROJECT_DEFINE=1"},
+		CXXFlags:     []string{"-Wall"},
+		LinkFlags:    []string{"-lpthread"},
+	}
+	global := &config.Global{
+		Build: config.GlobalBuild{
+			Flags: config.GlobalBuildFlags{
+				Defines:   []string{"GLOBAL_DEFINE=1"},
+				CXXFlags:  []string{"-fstack-protector-strong"},
+				LinkFlags: []string{"-ldl"},
+			},
+		},
+	}
+
+	got := applyGlobalBuildFlagsToMergedConfig(merged, global)
+	assert.Equal(t, []string{"GLOBAL_DEFINE=1", "PROJECT_DEFINE=1"}, got.CMakeDefines)
+	assert.Equal(t, []string{"-fstack-protector-strong", "-Wall"}, got.CXXFlags)
+	assert.Equal(t, []string{"-ldl", "-lpthread"}, got.LinkFlags)
 }

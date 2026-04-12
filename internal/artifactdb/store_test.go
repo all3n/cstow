@@ -2,6 +2,7 @@ package artifactdb
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -249,4 +250,22 @@ func TestStoreUpsertPreservesExistingHashMetadataWhenOmitted(t *testing.T) {
 	assert.Equal(t, "hash-12345", rows[0].HashID)
 	assert.Equal(t, []string{"lto", "asan"}, rows[0].BuildTags)
 	assert.Equal(t, secondSeen.UTC(), rows[0].LastSeenAt.UTC())
+}
+
+func TestOpenDefaultUsesResolvedArtifactDBPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", "")
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".cstow"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".cstow", "config.toml"), []byte(`
+[cache]
+dir = "~/configured-cache"
+`), 0o644))
+
+	store, err := OpenDefault()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	_, err = os.Stat(filepath.Join(home, "cstow.db"))
+	assert.NoError(t, err)
 }

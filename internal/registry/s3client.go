@@ -6,8 +6,11 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -127,8 +130,17 @@ func NewS3Client(ctx context.Context, reg config.Registry) (*S3Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	global, err := config.LoadGlobal()
+	if err != nil {
+		return nil, fmt.Errorf("load global config: %w", err)
+	}
 
 	var opts []func(*awsconfig.LoadOptions) error
+	networkOpts, err := registryLoadOptions(registryNetworkConfig(global))
+	if err != nil {
+		return nil, err
+	}
+	opts = append(opts, networkOpts...)
 
 	// Auth: explicit env vars take priority
 	if runtimeCfg.AccessKey != "" && runtimeCfg.SecretKey != "" {
@@ -168,6 +180,77 @@ func NewS3Client(ctx context.Context, reg config.Registry) (*S3Client, error) {
 		bucket: bucket,
 		prefix: prefix,
 	}, nil
+}
+
+func registryNetworkConfig(global *config.Global) *config.GlobalNetwork {
+	if global == nil {
+		return nil
+	}
+	return &global.Network
+}
+
+func registryLoadOptions(network *config.GlobalNetwork) ([]func(*awsconfig.LoadOptions) error, error) {
+	var opts []func(*awsconfig.LoadOptions) error
+	if network == nil {
+		return opts, nil
+	}
+	if client, err := newRegistryHTTPClient(network); err != nil {
+		return nil, err
+	} else if client != nil {
+		opts = append(opts, awsconfig.WithHTTPClient(client))
+	}
+	if network.Retries > 0 {
+		opts = append(opts, awsconfig.WithRetryMaxAttempts(network.Retries))
+	}
+	return opts, nil
+}
+
+func newRegistryHTTPClient(network *config.GlobalNetwork) (*http.Client, error) {
+	if network == nil {
+		return nil, nil
+	}
+
+	needsClient := network.Timeout > 0 || network.Proxy != "" || len(network.NoProxy) > 0
+	if !needsClient {
+		return nil, nil
+	}
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if network.Proxy != "" {
+		proxyURL, err := url.Parse(network.Proxy)
+		if err != nil {
+			return nil, fmt.Errorf("parse proxy: %w", err)
+		}
+		transport.Proxy = func(req *http.Request) (*url.URL, error) {
+			if shouldBypassProxyHost(req.URL.Hostname(), network.NoProxy) {
+				return nil, nil
+			}
+			return proxyURL, nil
+		}
+	}
+
+	client := &http.Client{Transport: transport}
+	if network.Timeout > 0 {
+		client.Timeout = time.Duration(network.Timeout) * time.Second
+	}
+	return client, nil
+}
+
+func shouldBypassProxyHost(host string, noProxy []string) bool {
+	host = strings.TrimSpace(strings.ToLower(host))
+	if host == "" {
+		return false
+	}
+	for _, pattern := range noProxy {
+		pattern = strings.TrimSpace(strings.ToLower(pattern))
+		if pattern == "" {
+			continue
+		}
+		if host == pattern || strings.HasSuffix(host, "."+pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 // Upload uploads a package artifact to the registry

@@ -37,16 +37,26 @@ go build -o cstow .
 
 Use targeted package tests while iterating (`go test ./internal/registry/...`), finish with `go test ./...`.
 
+### Reality Check
+
+- As of `2026-04-11`, `go test ./...` passes in the current Unix-like environment.
+- Do **not** treat that as cross-platform closure: several integration/E2E tests still skip on Windows, in short mode, or when external network/repositories are unavailable.
+- Do **not** describe helper surfaces like `migrate`, `ci`, `gen`, and `doctor` as “fully done products” unless the exact path is both tested and verified via a real CLI flow.
+
 ## Code Map
 
 - `cmd/`
-  - Commands: `init`, `build`, `add`, `fetch`, `publish`, `install`, `migrate`, `ci`, `workspace`, `check-abi`, `artifact`, `search`, `gen`, `clean`
+  - Commands: `init`, `build`, `add`, `fetch`, `publish`, `install`, `migrate`, `ci`, `workspace`, `check-abi`, `artifact`, `search`, `gen`, `clean`, `doctor`
   - `fetch.go` — downloads prebuilt artifacts, uses manifest metadata for ABI/build_type matching, falls back to source builds (git or repository), and indexes outcomes in artifact DB.
   - `deps.go` — builds repository packages and git sources from source, and indexes results in artifact DB. Handles shared dependency propagation (`ForceShared` for `-fPIC`).
+  - `workspace.go` — workspace init/add/list/fetch/build/gen/clean, including dependency-aware parallel scheduling.
   - `search.go` — searches repository paths for packages by name.
   - `gen.go` — generates `CMakeLists.txt` and `CMakePresets.json` for workspace projects.
+  - `doctor.go` — basic environment diagnostics for CMake, compiler, cache, artifact DB, and registry connectivity.
+  - `migrate.go` — basic CMake bootstrap into `cstow.toml`; still requires human review.
+  - `ci.go` — basic GitHub Actions generator; currently Linux-first and not the final CI story.
   - `clean.go` — cleans build artifacts.
-  - `artifact.go` — exposes artifact list/sync/show commands; SQLite is a query index over the cache.
+  - `artifact.go` — exposes artifact list/sync/show/prune commands; SQLite is a query index over the cache.
 - `internal/config/`
   - Project config (`cstow.toml`) and user config (`~/.cstow/config.toml`)
 - `internal/project/`
@@ -60,7 +70,7 @@ Use targeted package tests while iterating (`go test ./internal/registry/...`), 
 - `internal/registry/`
   - S3-compatible publish/download/manifest operations
 - `internal/artifactdb/`
-  - Local SQLite artifact index (`~/.cstow/cstow.db`): store, upsert, list, sync, hash_id lookup
+  - Local SQLite artifact index (default: parent of resolved cache root, usually `~/.cstow/cstow.db`): store, upsert, list, sync, hash_id lookup
 - `internal/repository/`
   - Repository package definitions, version lookup, layered build config merge, source fetch (git/archive), package search
 - `internal/builder/`
@@ -96,22 +106,32 @@ publish  → pack → registry (S3) + artifactdb index
 Follow the code as it exists today, not design docs. Key capabilities:
 
 - `add` supports `--source registry|git|local|repository`. Git source supports `--git-url`, `--tag`, and `--cmake-define`.
-- `build` supports `--fetch` for automatic dependency resolution.
-- `fetch` supports manifest-based ABI/build_type matching, hash-based direct fetch (`--artifact`), and source-build fallback (git/archive/repository).
-- `install` supports git sources and repository recipes with recursive dependency resolution. Shared deps propagate `-fPIC` transitively.
+- `build` supports `--fetch` for automatic dependency resolution, injects `build.defines` / `build.flags`, and can auto-generate a basic `CMakeLists.txt` when missing.
+- `fetch` supports manifest-based ABI/build_type matching, hash-based direct fetch (`--artifact`), and source-build fallback (git/archive/repository). Registry selection/hash/extract/download failures now include package/stage context, `--source-fallback=false` fails fast when no usable prebuilt artifact or registry configuration is available, fallback failures preserve both the prebuilt cause and the source-build cause, and fallback warnings/success lines use a consistent output style.
+- `install` supports git sources and repository recipes with recursive dependency resolution. Shared deps propagate `-fPIC` transitively, repository recursion now reports explicit dependency cycles, and source-build failures include package/stage context.
 - `publish` populates `hash_id` and `build_tags` metadata in manifests.
+- `doctor` checks CMake, compiler, cache directory, artifact DB, and registry basic connectivity.
 - `search` scans repository paths for packages by name.
 - `gen` generates `CMakeLists.txt` and `CMakePresets.json` for workspace projects.
 - Repository paths support project-level `.cstow/repository/` with highest priority.
 - `internal/repository/source.go` supports both `git` and `archive` (.tar.gz, .zip) sources, with support for version-specific `url` and `url_template` overrides.
 - `internal/builder/` supports CMake and Autotools (with custom `configure_script` and `CFLAGS` support), handles patch application before build, and validates debug/shared library variants across `lib`, `lib64`, and `bin` paths.
 - Workspace supports topological build order and parallel building (`--jobs`).
-- Local artifact DB (`~/.cstow/cstow.db`) indexes all successful builds and fetches.
+- Local artifact DB (default: parent of resolved cache root, usually `~/.cstow/cstow.db`) indexes all successful builds and fetches.
+
+## Known Gaps
+
+- Windows/MSVC and network-dependent end-to-end coverage is still partial; passing local Unix tests does not prove those paths are stable.
+- `~/.cstow/config.toml` `cache.dir` is now consumed consistently for cache-root operations, and the default artifact DB path follows the resolved cache root's parent directory.
+- Global config fields `repositories[].git|branch|archive|auto_update` are still not fully wired through the main install/fetch/build flows. Global `[network]` now covers archive-source HTTP downloads and registry client construction, and global `[build.flags]` covers the main source-build paths, but neither is wired through every auxiliary surface yet.
+- `migrate`, `ci`, `gen`, and `doctor` should be treated as “basic usable” surfaces, not feature-complete product areas.
 
 
 ## Key Command Flags
 
 ```
+cstow --repository <path>            # append repository search path for the current command
+cstow --registry <url>               # override primary registry URL for the current command
 cstow fetch --artifact <hash>        # fetch by hash_id (or unique prefix)
 cstow fetch --source-fallback=false  # disable source-build fallback
 cstow fetch --toolchain <name>       # override compiler for ABI detection
@@ -121,10 +141,13 @@ cstow publish --build-tag key=val    # attach build tag metadata (repeatable)
 cstow publish --version <ver>        # required for local-artifact mode
 cstow add --build-type static|shared # set dependency build type
 cstow build --profile debug|release  # build profile (default: debug)
-cstow build --toolchain auto|gcc|clang  # compiler selection
+cstow build --toolchain auto|gcc|clang|msvc  # compiler selection
 cstow search <query>                 # search repository packages by name
+cstow artifact prune --dry-run       # preview cache cleanup
+cstow workspace fetch                # fetch all workspace dependencies into the root deps dir
 cstow workspace build --jobs N       # parallel workspace build
 cstow workspace gen                  # generate CMakeLists.txt for workspace
+cstow doctor                         # basic environment diagnostics
 ```
 
 ## Code Style
@@ -139,6 +162,8 @@ cstow workspace gen                  # generate CMakeLists.txt for workspace
 
 - Keep project-build flow and source-build flow conceptually separate unless explicitly unifying them.
 - Before changing dependency behavior, inspect the interaction among `cmd/add.go`, `cmd/fetch.go`, `cmd/install.go`, `cmd/build.go`, `internal/resolver/`, and `internal/repository/`.
+- When touching recursive repository installs, inspect `cmd/deps.go` carefully and preserve or improve the current error context; do not introduce silent recursion or cycle regressions.
+- When touching config behavior, explicitly distinguish “parsed”, “partially consumed”, and “fully wired” fields in both code and docs.
 - If you change TOML schema or repository semantics, update tests in the same package.
 - Prefer extending existing tests over only changing docs.
 - Treat `PLAN.md` as the execution roadmap and keep it aligned with the actual implementation state.

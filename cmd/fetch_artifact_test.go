@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -178,6 +179,460 @@ region = "auto"
 	assert.FileExists(t, filepath.Join(rows[0].InstallDir, "include", "fmt", "format.h"))
 }
 
+func TestFetchRegistryIntegrityFailureIncludesStageContext(t *testing.T) {
+	home := t.TempDir()
+	cacheRoot := filepath.Join(home, ".cstow", "cache")
+	workdir := t.TempDir()
+
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", cacheRoot)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".cstow"), 0o755))
+
+	oldFactory := fetchNewRegistryClient
+	fetchNewRegistryClient = func(ctx context.Context, reg config.Registry) (fetchRegistryClient, error) {
+		return &fakeFetchRegistryClient{
+			manifest: &registry.Manifest{
+				Name:    "fmt",
+				Version: "10.2.1",
+				Artifacts: []registry.Artifact{{
+					ABITag:    "abi-registry",
+					BuildType: "shared",
+					HashID:    "deadbeef",
+				}},
+			},
+			archive: []byte("not-a-real-tar.zst"),
+		}, nil
+	}
+	t.Cleanup(func() { fetchNewRegistryClient = oldFactory })
+
+	writeFetchProject(t, workdir, `
+[package]
+name = "demo"
+version = "0.1.0"
+
+[[dependencies]]
+name = "fmt"
+version = "10.2.1"
+source = "registry"
+build_type = "shared"
+
+[[registry]]
+name = "default"
+url = "s3://example/cstow"
+provider = "custom"
+region = "auto"
+`, &resolver.LockFile{
+		Version: 1,
+		Packages: []resolver.LockEntry{{
+			Name:      "fmt",
+			Version:   "10.2.1",
+			Source:    "registry:default",
+			ABITag:    "abi-registry",
+			BuildType: "shared",
+		}},
+	})
+	withWorkingDir(t, workdir)
+
+	_, err := executeRootForTestWithError(t, "fetch")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "registry artifact fmt@10.2.1[shared]: verify artifact hash")
+	assert.Contains(t, err.Error(), "SHA256 mismatch")
+}
+
+func TestFetchRegistryExtractFailureIncludesStageContext(t *testing.T) {
+	home := t.TempDir()
+	cacheRoot := filepath.Join(home, ".cstow", "cache")
+	workdir := t.TempDir()
+
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", cacheRoot)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".cstow"), 0o755))
+
+	oldFactory := fetchNewRegistryClient
+	fetchNewRegistryClient = func(ctx context.Context, reg config.Registry) (fetchRegistryClient, error) {
+		return &fakeFetchRegistryClient{
+			manifest: &registry.Manifest{
+				Name:    "fmt",
+				Version: "10.2.1",
+				Artifacts: []registry.Artifact{{
+					ABITag:    "abi-registry",
+					BuildType: "shared",
+				}},
+			},
+			archive: []byte("this-will-pass-empty-hash-but-fail-extract"),
+		}, nil
+	}
+	t.Cleanup(func() { fetchNewRegistryClient = oldFactory })
+
+	writeFetchProject(t, workdir, `
+[package]
+name = "demo"
+version = "0.1.0"
+
+[[dependencies]]
+name = "fmt"
+version = "10.2.1"
+source = "registry"
+build_type = "shared"
+
+[[registry]]
+name = "default"
+url = "s3://example/cstow"
+provider = "custom"
+region = "auto"
+`, &resolver.LockFile{
+		Version: 1,
+		Packages: []resolver.LockEntry{{
+			Name:      "fmt",
+			Version:   "10.2.1",
+			Source:    "registry:default",
+			ABITag:    "abi-registry",
+			BuildType: "shared",
+		}},
+	})
+	withWorkingDir(t, workdir)
+
+	_, err := executeRootForTestWithError(t, "fetch")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "registry artifact fmt@10.2.1[shared]: extract archive")
+}
+
+func TestFetchManifestSelectionFailureReturnsErrorWhenSourceFallbackDisabled(t *testing.T) {
+	home := t.TempDir()
+	cacheRoot := filepath.Join(home, ".cstow", "cache")
+	workdir := t.TempDir()
+
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", cacheRoot)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".cstow"), 0o755))
+
+	oldFactory := fetchNewRegistryClient
+	fetchNewRegistryClient = func(ctx context.Context, reg config.Registry) (fetchRegistryClient, error) {
+		return &fakeFetchRegistryClient{
+			manifest: &registry.Manifest{
+				Name:    "fmt",
+				Version: "10.2.1",
+				Artifacts: []registry.Artifact{{
+					ABITag:    "abi-registry",
+					BuildType: "static",
+				}},
+			},
+		}, nil
+	}
+	t.Cleanup(func() { fetchNewRegistryClient = oldFactory })
+
+	writeFetchProject(t, workdir, `
+[package]
+name = "demo"
+version = "0.1.0"
+
+[[dependencies]]
+name = "fmt"
+version = "10.2.1"
+source = "registry"
+build_type = "shared"
+
+[[registry]]
+name = "default"
+url = "s3://example/cstow"
+provider = "custom"
+region = "auto"
+`, &resolver.LockFile{
+		Version: 1,
+		Packages: []resolver.LockEntry{{
+			Name:      "fmt",
+			Version:   "10.2.1",
+			Source:    "registry:default",
+			ABITag:    "abi-registry",
+			BuildType: "shared",
+		}},
+	})
+	withWorkingDir(t, workdir)
+
+	_, err := executeRootForTestWithError(t, "fetch", "--source-fallback=false")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "prebuilt artifact unavailable for fmt@10.2.1 and source fallback is disabled")
+	assert.Contains(t, err.Error(), "registry artifact fmt@10.2.1[shared]: select manifest artifact")
+}
+
+func TestFetchRegistryDownloadFailureReturnsErrorWhenSourceFallbackDisabled(t *testing.T) {
+	home := t.TempDir()
+	cacheRoot := filepath.Join(home, ".cstow", "cache")
+	workdir := t.TempDir()
+
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", cacheRoot)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".cstow"), 0o755))
+
+	oldFactory := fetchNewRegistryClient
+	fetchNewRegistryClient = func(ctx context.Context, reg config.Registry) (fetchRegistryClient, error) {
+		return &fakeFetchRegistryClient{
+			manifest: &registry.Manifest{
+				Name:    "fmt",
+				Version: "10.2.1",
+				Artifacts: []registry.Artifact{{
+					ABITag:    "abi-registry",
+					BuildType: "shared",
+				}},
+			},
+			downloadErr: errors.New("blob missing"),
+		}, nil
+	}
+	t.Cleanup(func() { fetchNewRegistryClient = oldFactory })
+
+	writeFetchProject(t, workdir, `
+[package]
+name = "demo"
+version = "0.1.0"
+
+[[dependencies]]
+name = "fmt"
+version = "10.2.1"
+source = "registry"
+build_type = "shared"
+
+[[registry]]
+name = "default"
+url = "s3://example/cstow"
+provider = "custom"
+region = "auto"
+`, &resolver.LockFile{
+		Version: 1,
+		Packages: []resolver.LockEntry{{
+			Name:      "fmt",
+			Version:   "10.2.1",
+			Source:    "registry:default",
+			ABITag:    "abi-registry",
+			BuildType: "shared",
+		}},
+	})
+	withWorkingDir(t, workdir)
+
+	_, err := executeRootForTestWithError(t, "fetch", "--source-fallback=false")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "prebuilt artifact unavailable for fmt@10.2.1 and source fallback is disabled")
+	assert.Contains(t, err.Error(), "registry artifact fmt@10.2.1[shared]: download artifact")
+	assert.Contains(t, err.Error(), "blob missing")
+}
+
+func TestFetchManifestLookupAndLegacyDownloadFailureIncludeBothStages(t *testing.T) {
+	home := t.TempDir()
+	cacheRoot := filepath.Join(home, ".cstow", "cache")
+	workdir := t.TempDir()
+
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", cacheRoot)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".cstow"), 0o755))
+
+	oldFactory := fetchNewRegistryClient
+	fetchNewRegistryClient = func(ctx context.Context, reg config.Registry) (fetchRegistryClient, error) {
+		return &fakeFetchRegistryClient{
+			manifestErr: errors.New("manifest missing"),
+			downloadErr: errors.New("legacy object missing"),
+		}, nil
+	}
+	t.Cleanup(func() { fetchNewRegistryClient = oldFactory })
+
+	writeFetchProject(t, workdir, `
+[package]
+name = "demo"
+version = "0.1.0"
+
+[[dependencies]]
+name = "fmt"
+version = "10.2.1"
+source = "registry"
+build_type = "shared"
+
+[[registry]]
+name = "default"
+url = "s3://example/cstow"
+provider = "custom"
+region = "auto"
+`, &resolver.LockFile{
+		Version: 1,
+		Packages: []resolver.LockEntry{{
+			Name:      "fmt",
+			Version:   "10.2.1",
+			Source:    "registry:default",
+			ABITag:    "abi-registry",
+			BuildType: "shared",
+		}},
+	})
+	withWorkingDir(t, workdir)
+
+	_, err := executeRootForTestWithError(t, "fetch", "--source-fallback=false")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "prebuilt artifact unavailable for fmt@10.2.1 and source fallback is disabled")
+	assert.Contains(t, err.Error(), "registry artifact fmt@10.2.1[shared]: get manifest: manifest missing; download artifact: legacy object missing")
+}
+
+func TestFetchWithoutRegistryFailsWhenSourceFallbackDisabled(t *testing.T) {
+	home := t.TempDir()
+	cacheRoot := filepath.Join(home, ".cstow", "cache")
+	workdir := t.TempDir()
+
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", cacheRoot)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".cstow"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".cstow", "config.toml"), []byte(`
+[defaults]
+std = "c++17"
+`), 0o644))
+
+	writeFetchProject(t, workdir, `
+[package]
+name = "demo"
+version = "0.1.0"
+
+[[dependencies]]
+name = "fmt"
+version = "10.2.1"
+source = "registry"
+build_type = "shared"
+`, &resolver.LockFile{
+		Version: 1,
+		Packages: []resolver.LockEntry{{
+			Name:      "fmt",
+			Version:   "10.2.1",
+			Source:    "registry:default",
+			BuildType: "shared",
+		}},
+	})
+	withWorkingDir(t, workdir)
+
+	_, err := executeRootForTestWithError(t, "fetch", "--source-fallback=false")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no registry is configured for fmt@10.2.1 and source fallback is disabled")
+}
+
+func TestFetchRepositoryFallbackOutputUsesUnifiedWarningAndBuiltSourceLabel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("repository fallback integration is only covered on Unix-like hosts")
+	}
+	requireTool(t, "git")
+	requireTool(t, "cmake")
+	requireTool(t, "g++")
+
+	home := t.TempDir()
+	cacheRoot := filepath.Join(home, ".cstow", "cache")
+	repoRoot := filepath.Join(home, "repository")
+	workdir := t.TempDir()
+	sourceRepo := createTaggedLibraryRepo(t)
+
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", cacheRoot)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".cstow"), 0o755))
+	writeRepositoryPackage(t, repoRoot, "mini-fetch", sourceRepo, packageOptions{buildType: "static"})
+	require.NoError(t, os.WriteFile(
+		filepath.Join(home, ".cstow", "config.toml"),
+		[]byte(fmt.Sprintf(`
+[defaults]
+std = "c++17"
+profile = "debug"
+`,)),
+		0o644,
+	))
+
+	writeFetchProject(t, workdir, `
+[package]
+name = "demo"
+version = "0.1.0"
+
+[[dependencies]]
+name = "mini-fetch"
+version = "1.0.0"
+source = "registry"
+build_type = "static"
+`, &resolver.LockFile{
+		Version: 1,
+		Packages: []resolver.LockEntry{{
+			Name:      "mini-fetch",
+			Version:   "1.0.0",
+			Source:    "registry:default",
+			BuildType: "static",
+		}},
+	})
+	withWorkingDir(t, workdir)
+
+	output := executeRootForTest(t, "fetch", "--repository", repoRoot)
+	assert.Contains(t, output, "[warn] source fallback for mini-fetch@1.0.0: no registry is configured for mini-fetch@1.0.0")
+	assert.Contains(t, output, "[built-source] mini-fetch@1.0.0")
+}
+
+func TestFetchPrebuiltMismatchFallbackOutputUsesUnifiedWarningAndBuiltSourceLabel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("repository fallback integration is only covered on Unix-like hosts")
+	}
+	requireTool(t, "git")
+	requireTool(t, "cmake")
+	requireTool(t, "g++")
+
+	home := t.TempDir()
+	cacheRoot := filepath.Join(home, ".cstow", "cache")
+	repoRoot := filepath.Join(home, "repository")
+	workdir := t.TempDir()
+	sourceRepo := createTaggedLibraryRepo(t)
+
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", cacheRoot)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".cstow"), 0o755))
+	writeRepositoryPackage(t, repoRoot, "mini-fetch", sourceRepo, packageOptions{buildType: "static"})
+
+	oldFactory := fetchNewRegistryClient
+	fetchNewRegistryClient = func(ctx context.Context, reg config.Registry) (fetchRegistryClient, error) {
+		return &fakeFetchRegistryClient{
+			manifest: &registry.Manifest{
+				Name:    "mini-fetch",
+				Version: "1.0.0",
+				Artifacts: []registry.Artifact{{
+					ABITag:    "abi-registry",
+					BuildType: "shared",
+				}},
+			},
+		}, nil
+	}
+	t.Cleanup(func() { fetchNewRegistryClient = oldFactory })
+
+	writeFetchProject(t, workdir, `
+[package]
+name = "demo"
+version = "0.1.0"
+
+[[dependencies]]
+name = "mini-fetch"
+version = "1.0.0"
+source = "registry"
+build_type = "static"
+
+[[registry]]
+name = "default"
+url = "s3://example/cstow"
+provider = "custom"
+region = "auto"
+`, &resolver.LockFile{
+		Version: 1,
+		Packages: []resolver.LockEntry{{
+			Name:      "mini-fetch",
+			Version:   "1.0.0",
+			Source:    "registry:default",
+			ABITag:    "abi-registry",
+			BuildType: "static",
+		}},
+	})
+	withWorkingDir(t, workdir)
+
+	output := executeRootForTest(t, "fetch", "--repository", repoRoot)
+	assert.Contains(t, output, "[warn] source fallback for mini-fetch@1.0.0: registry artifact mini-fetch@1.0.0[static]: select manifest artifact")
+	assert.Contains(t, output, "[built-source] mini-fetch@1.0.0")
+}
+
 func TestFetchIndexesRepositoryFallbackArtifact(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -236,7 +691,8 @@ build_type = "static"
 	withWorkingDir(t, workdir)
 
 	output := executeRootForTest(t, "fetch")
-	assert.Contains(t, output, "[built] mini-fetch@1.0.0")
+	assert.Contains(t, output, "[warn] source fallback for mini-fetch@1.0.0: no registry is configured for mini-fetch@1.0.0")
+	assert.Contains(t, output, "[built-source] mini-fetch@1.0.0")
 
 	rows := readIndexedRows(t)
 	require.Len(t, rows, 1)

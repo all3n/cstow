@@ -180,6 +180,7 @@ func runFetch(cfg *config.Config, opts fetchOptions) error {
 		pkg := &lf.Packages[i]
 		abiTags := candidateABITags(pkg.ABITag, detectedABITag)
 		buildType := fetchBuildType(pkg.Name, *pkg, cfg)
+		var prebuiltErr error
 		if pkg.BuildType != buildType {
 			pkg.BuildType = buildType
 			lockDirty = true
@@ -254,6 +255,7 @@ func runFetch(cfg *config.Config, opts fetchOptions) error {
 				artifact, selectErr := registry.SelectArtifact(manifest, abiTags, buildType)
 				if selectErr != nil {
 					downloadErr = selectErr
+					prebuiltErr = wrapRegistryFetchStage(pkg.Name, pkg.Version, buildType, "select manifest artifact", selectErr)
 				} else {
 					data, downloadErr = downloadFromManifestArtifact(context.Background(), s3client, pkg.Name, pkg.Version, *artifact)
 					if downloadErr == nil {
@@ -261,6 +263,8 @@ func runFetch(cfg *config.Config, opts fetchOptions) error {
 						fetchedBuildType = artifact.BuildType
 						fetchedHashID = artifact.HashID
 						fetchedBuildTags = artifact.BuildTags
+					} else {
+						prebuiltErr = wrapRegistryFetchStage(pkg.Name, pkg.Version, resolvedFetchBuildType(buildType, artifact.BuildType), "download artifact", downloadErr)
 					}
 				}
 			} else {
@@ -272,18 +276,21 @@ func runFetch(cfg *config.Config, opts fetchOptions) error {
 						break
 					}
 				}
+				if downloadErr != nil {
+					prebuiltErr = registryDownloadUnavailableError(pkg.Name, pkg.Version, buildType, manifestErr, downloadErr)
+				}
 			}
 
 			if downloadErr == nil {
 				if err := verifyArtifactHash(data, fetchedHashID); err != nil {
-					return fmt.Errorf("integrity check failed for %s@%s: %w", pkg.Name, pkg.Version, err)
+					return wrapRegistryFetchStage(pkg.Name, pkg.Version, resolvedFetchBuildType(buildType, fetchedBuildType), "verify artifact hash", err)
 				}
 				destDir := cache.Path(pkg.Name, pkg.Version, fetchedABITag, fetchedBuildType)
 				if err := os.MkdirAll(destDir, 0o755); err != nil {
-					return fmt.Errorf("create cache dir: %w", err)
+					return wrapRegistryFetchStage(pkg.Name, pkg.Version, resolvedFetchBuildType(buildType, fetchedBuildType), "create cache dir", err)
 				}
 				if err := pack.ExtractTarZst(data, destDir); err != nil {
-					return fmt.Errorf("extract %s@%s: %w", pkg.Name, pkg.Version, err)
+					return wrapRegistryFetchStage(pkg.Name, pkg.Version, resolvedFetchBuildType(buildType, fetchedBuildType), "extract archive", err)
 				}
 
 				if err := indexSuccessfulArtifact(cache, indexedArtifact{
@@ -296,7 +303,7 @@ func runFetch(cfg *config.Config, opts fetchOptions) error {
 					InstallDir: destDir,
 					Origin:     "registry",
 				}); err != nil {
-					return err
+					return wrapRegistryFetchStage(pkg.Name, pkg.Version, resolvedFetchBuildType(buildType, fetchedBuildType), "index artifact", err)
 				}
 				depPaths[pkg.Name] = destDir
 				if pkg.ABITag != fetchedABITag {
@@ -307,7 +314,14 @@ func runFetch(cfg *config.Config, opts fetchOptions) error {
 				continue
 			}
 
-			fmt.Fprintf(opts.Stdout, "  [warn] prebuilt artifact unavailable for %s@%s, trying source fallback\n", pkg.Name, pkg.Version)
+			if prebuiltErr == nil {
+				prebuiltErr = wrapRegistryFetchStage(pkg.Name, pkg.Version, buildType, "download artifact", downloadErr)
+			}
+			if !opts.SourceFallback {
+				return fmt.Errorf("prebuilt artifact unavailable for %s@%s and source fallback is disabled: %w", pkg.Name, pkg.Version, prebuiltErr)
+			}
+
+			printSourceFallbackWarning(opts.Stdout, pkg.Name, pkg.Version, prebuiltErr)
 		}
 
 		if strings.HasPrefix(pkg.Source, "local") && pkg.Path != "" {
@@ -316,14 +330,21 @@ func runFetch(cfg *config.Config, opts fetchOptions) error {
 			continue
 		}
 
+		if s3client == nil && strings.HasPrefix(pkg.Source, "registry") {
+			prebuiltErr = fmt.Errorf("no registry is configured for %s@%s", pkg.Name, pkg.Version)
+			if !opts.SourceFallback {
+				return fmt.Errorf("no registry is configured for %s@%s and source fallback is disabled", pkg.Name, pkg.Version)
+			}
+			printSourceFallbackWarning(opts.Stdout, pkg.Name, pkg.Version, prebuiltErr)
+		}
+
 		if !opts.SourceFallback {
-			fmt.Fprintf(opts.Stdout, "  [skip] %s@%s (source fallback disabled)\n", pkg.Name, pkg.Version)
-			continue
+			return fmt.Errorf("source fallback is disabled for %s@%s and no usable prebuilt artifact was fetched", pkg.Name, pkg.Version)
 		}
 
 		ctx, err := ensureInstallCtx()
 		if err != nil {
-			return fmt.Errorf("prepare source fallback for %s@%s: %w", pkg.Name, pkg.Version, err)
+			return wrapSourceFallbackError(pkg.Name, pkg.Version, prebuiltErr, fmt.Errorf("prepare source fallback: %w", err))
 		}
 
 		result, err := installFromRepository(pkg.Name, pkg.Version, repositoryInstallOptions{
@@ -333,7 +354,7 @@ func runFetch(cfg *config.Config, opts fetchOptions) error {
 			Stderr:    opts.Stderr,
 		})
 		if err != nil {
-			return fmt.Errorf("source fallback for %s@%s: %w", pkg.Name, pkg.Version, err)
+			return wrapSourceFallbackError(pkg.Name, pkg.Version, prebuiltErr, err)
 		}
 
 		depPaths[pkg.Name] = result.InstallDir
@@ -345,11 +366,7 @@ func runFetch(cfg *config.Config, opts fetchOptions) error {
 			pkg.BuildType = result.BuildType
 			lockDirty = true
 		}
-		if result.Cached {
-			fmt.Fprintf(opts.Stdout, "  [cached-source] %s@%s (%s, %s)\n", pkg.Name, result.Version, result.ABITag, result.BuildType)
-		} else {
-			fmt.Fprintf(opts.Stdout, "  [built] %s@%s (%s) -> %s\n", pkg.Name, result.Version, result.BuildType, result.InstallDir)
-		}
+		printSourceFallbackResult(opts.Stdout, pkg.Name, result)
 	}
 
 	if lockDirty {
@@ -415,6 +432,62 @@ func displayBuildType(buildType string) string {
 		return "default"
 	}
 	return buildType
+}
+
+func resolvedFetchBuildType(requested, actual string) string {
+	if actual != "" {
+		return actual
+	}
+	return requested
+}
+
+func wrapRegistryFetchStage(name, version, buildType, stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("registry artifact %s@%s[%s]: %s: %w", name, version, displayBuildType(buildType), stage, err)
+}
+
+func registryDownloadUnavailableError(name, version, buildType string, manifestErr, downloadErr error) error {
+	if manifestErr != nil && downloadErr != nil {
+		return fmt.Errorf("registry artifact %s@%s[%s]: get manifest: %v; download artifact: %w", name, version, displayBuildType(buildType), manifestErr, downloadErr)
+	}
+	if manifestErr != nil {
+		return wrapRegistryFetchStage(name, version, buildType, "get manifest", manifestErr)
+	}
+	return wrapRegistryFetchStage(name, version, buildType, "download artifact", downloadErr)
+}
+
+func wrapSourceFallbackError(name, version string, prebuiltErr error, err error) error {
+	if err == nil {
+		return nil
+	}
+	if prebuiltErr != nil {
+		return fmt.Errorf("source fallback for %s@%s after prebuilt artifact unavailable (%v): %w", name, version, prebuiltErr, err)
+	}
+	return fmt.Errorf("source fallback for %s@%s: %w", name, version, err)
+}
+
+func printSourceFallbackWarning(w io.Writer, name, version string, cause error) {
+	if w == nil || cause == nil {
+		return
+	}
+	fmt.Fprintf(w, "  [warn] source fallback for %s@%s: %v\n", name, version, cause)
+}
+
+func printSourceFallbackResult(w io.Writer, requestedName string, result *repositoryInstallResult) {
+	if w == nil || result == nil {
+		return
+	}
+	name := requestedName
+	if name == "" {
+		name = "unknown"
+	}
+	if result.Cached {
+		fmt.Fprintf(w, "  [cached-source] %s@%s (%s, %s)\n", name, result.Version, result.ABITag, result.BuildType)
+		return
+	}
+	fmt.Fprintf(w, "  [built-source] %s@%s (%s) -> %s\n", name, result.Version, result.BuildType, result.InstallDir)
 }
 
 func downloadFromManifestArtifact(ctx context.Context, downloader artifactDownloader, name, version string, artifact registry.Artifact) ([]byte, error) {

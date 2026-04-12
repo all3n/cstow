@@ -168,6 +168,34 @@ func TestFSCacheLegacyFallback(t *testing.T) {
 	assert.True(t, cache.Has("fmt", "10.2.1", "gcc13-cxx17-x86_64", "shared"))
 }
 
+func TestNewFSCacheUsesGlobalCacheDirWhenEnvUnset(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", "")
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".cstow"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".cstow", "config.toml"), []byte(`
+[cache]
+dir = "~/configured-cache"
+`), 0o644))
+
+	cache := NewFSCache()
+	assert.Equal(t, filepath.Join(home, "configured-cache"), cache.Root)
+}
+
+func TestNewFSCachePrefersEnvOverGlobalCacheDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CSTOW_CACHE_DIR", filepath.Join(home, "env-cache"))
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".cstow"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".cstow", "config.toml"), []byte(`
+[cache]
+dir = "~/configured-cache"
+`), 0o644))
+
+	cache := NewFSCache()
+	assert.Equal(t, filepath.Join(home, "env-cache"), cache.Root)
+}
+
 func TestAddDependency(t *testing.T) {
 	cfg := &config.Config{}
 	AddDependency(cfg, config.Dependency{Name: "fmt", Version: "^10.0.0", Source: "registry", BuildType: "shared"})

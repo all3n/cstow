@@ -100,7 +100,7 @@
 - 应用版本特定的 patch
 - 本地构建
 - 安装到 `~/.cstow/cache/<name>/<version>/<abi_tag>/<build_type>/`
-- 索引到本地 artifact DB (`~/.cstow/cstow.db`)
+- 索引到本地 artifact DB（默认是 resolved cache 根的父目录下的 `cstow.db`；默认布局仍为 `~/.cstow/cstow.db`）
 
 同样支持通过 `--repository <path>` 临时追加一次性测试仓库，并优先于全局配置中的 repository 路径。
 
@@ -201,7 +201,16 @@ retries = 5
   - 未显式配置 `endpoint_url` 时，会尝试从 `AWS_PROFILE` / `registry.profile` 对应的 `~/.aws/config` 读取 S3 endpoint
   - 显式凭证优先级：`CSTOW_REGISTRY_KEY/SECRET` > `registry.access_key/secret_key` > `~/.aws/credentials` / AWS 默认链
 - `cache.dir`
-  - 当前结构体支持，但 `resolver.NewFSCache()` 仍优先走 `CSTOW_CACHE_DIR` 或默认 `~/.cstow/cache`，还没有完全对齐到这个字段
+  - 现在会被 resolver / fetch / artifact sync / doctor / clean 统一消费
+  - 优先级：`CSTOW_CACHE_DIR` > `cache.dir` > 默认 `~/.cstow/cache`
+  - 本地 artifact DB 会默认跟随 resolved cache 根的父目录，默认布局仍是 `~/.cstow/cstow.db`
+- `[build.flags]`
+  - 现在会作为全局默认 flags 进入当前项目 `build` 路径，以及 repository / git source 的源码构建路径
+  - 优先级上低于项目/recipe 自身 flags，适合作为团队级默认基线
+- `[network]`
+  - 当前已经接入 archive 类型源码下载，以及 registry 客户端构建
+  - 已生效字段：`timeout_sec`、`retries`、`proxy`、`no_proxy`
+  - `git` 路径还没有完整复用这套配置
 
 ### 这些字段当前只解析或只部分保留
 
@@ -210,7 +219,9 @@ retries = 5
 - `repositories[].archive`
 - `repositories[].auto_update`
 - `[build.flags]`
+  - 主构建链路已消费，但 `gen` 等辅助面还没有完整复用这套全局默认值
 - `[network]`
+  - archive 与 registry 主路径已消费，但 `git` 路径还没有完整接入
 
 这些字段在配置结构里已存在，但 repository / install 主路径还没有完整消费。
 

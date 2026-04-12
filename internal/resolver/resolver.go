@@ -228,12 +228,21 @@ type FSCache struct {
 }
 
 func NewFSCache() *FSCache {
-	root := os.Getenv("CSTOW_CACHE_DIR")
-	if root == "" {
-		home, _ := os.UserHomeDir()
-		root = filepath.Join(home, ".cstow", "cache")
+	root := filepath.Join(mustUserHomeDir(), ".cstow", "cache")
+	if global, err := config.LoadGlobal(); err == nil {
+		if resolved, err := config.ResolveCacheDir(global); err == nil && resolved != "" {
+			root = resolved
+		}
 	}
 	return &FSCache{Root: root}
+}
+
+func mustUserHomeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "."
+	}
+	return home
 }
 
 func (c *FSCache) Has(name, version, abiTag, buildType string) bool {

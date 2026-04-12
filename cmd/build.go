@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/all3n/cstow/internal/abi"
@@ -45,6 +46,10 @@ func runBuild(workDir, profile, toolchainName string, autoFetch bool, stdout, st
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+	globalCfg, err := config.LoadGlobal()
+	if err != nil {
+		return fmt.Errorf("load global config: %w", err)
 	}
 
 	// Merge --toolchain flag into config
@@ -127,7 +132,7 @@ func runBuild(workDir, profile, toolchainName string, autoFetch bool, stdout, st
 		fmt.Sprintf("-DCMAKE_BUILD_TYPE=%s", cmakeType),
 	}
 	cmakeArgs = append(cmakeArgs, tc.CMakeFlags()...)
-	cmakeArgs = appendCMakeConfigArgs(cmakeArgs, cfg, profile)
+	cmakeArgs = appendCMakeConfigArgs(cmakeArgs, cfg, globalCfg, profile)
 
 	// Inject dependency paths from cstow_deps (local and workspace root)
 	depsDirs := []string{filepath.Join(workDir, "cstow_deps")}
@@ -322,9 +327,16 @@ func checkDependenciesReady(workDir string) error {
 	return nil
 }
 
-// appendCMakeConfigArgs adds build.defines, build.include, and profile flags to cmake args.
-func appendCMakeConfigArgs(args []string, cfg *config.Config, profile string) []string {
+// appendCMakeConfigArgs adds global/project build defines, includes, and profile flags to cmake args.
+func appendCMakeConfigArgs(args []string, cfg *config.Config, global *config.Global, profile string) []string {
+	globalFlags := config.GlobalBuildFlags{}
+	if global != nil {
+		globalFlags = global.Build.Flags
+	}
 	// Inject build.defines as cmake -D flags
+	for _, d := range globalFlags.Defines {
+		args = append(args, "-D"+d)
+	}
 	for _, d := range cfg.Build.Defines {
 		args = append(args, "-D"+d)
 	}
@@ -339,11 +351,15 @@ func appendCMakeConfigArgs(args []string, cfg *config.Config, profile string) []
 	}
 
 	// Inject build.flags
-	if len(cfg.Build.Flags.CXXFlags) > 0 {
-		args = append(args, fmt.Sprintf("-DCMAKE_CXX_FLAGS=%s", strings.Join(cfg.Build.Flags.CXXFlags, " ")))
+	cxxFlags := slices.Clone(globalFlags.CXXFlags)
+	cxxFlags = append(cxxFlags, cfg.Build.Flags.CXXFlags...)
+	if len(cxxFlags) > 0 {
+		args = append(args, fmt.Sprintf("-DCMAKE_CXX_FLAGS=%s", strings.Join(cxxFlags, " ")))
 	}
-	if len(cfg.Build.Flags.LinkFlags) > 0 {
-		joined := strings.Join(cfg.Build.Flags.LinkFlags, " ")
+	linkFlags := slices.Clone(globalFlags.LinkFlags)
+	linkFlags = append(linkFlags, cfg.Build.Flags.LinkFlags...)
+	if len(linkFlags) > 0 {
+		joined := strings.Join(linkFlags, " ")
 		args = append(args,
 			fmt.Sprintf("-DCMAKE_EXE_LINKER_FLAGS=%s", joined),
 			fmt.Sprintf("-DCMAKE_SHARED_LINKER_FLAGS=%s", joined),

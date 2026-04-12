@@ -9,11 +9,19 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/all3n/cstow/internal/config"
 )
+
+type FetchOptions struct {
+	Network *config.GlobalNetwork
+}
 
 // ExpandTagTemplate replaces "{version}" in a tag template.
 // "v{version}" + "1.14.0" → "v1.14.0".
@@ -29,6 +37,10 @@ func ExpandTagTemplate(template, version string) string {
 // Returns the path to the source root.
 // Supports git (clone + checkout) and archive sources.
 func FetchSource(srcDef SourceDef, ver *VersionOverride, version, expectedSHA256, destDir string) (string, error) {
+	return FetchSourceWithOptions(srcDef, ver, version, expectedSHA256, destDir, FetchOptions{})
+}
+
+func FetchSourceWithOptions(srcDef SourceDef, ver *VersionOverride, version, expectedSHA256, destDir string, opts FetchOptions) (string, error) {
 	switch srcDef.Type {
 	case "git":
 		url := srcDef.URL
@@ -53,7 +65,7 @@ func FetchSource(srcDef SourceDef, ver *VersionOverride, version, expectedSHA256
 		if ver != nil && ver.Source != nil && ver.Source.URL != "" {
 			url = ver.Source.URL
 		}
-		if err := FetchArchive(url, expectedSHA256, destDir); err != nil {
+		if err := FetchArchiveWithOptions(url, expectedSHA256, destDir, opts); err != nil {
 			return "", fmt.Errorf("archive fetch %s: %w", url, err)
 		}
 		return destDir, nil
@@ -73,19 +85,13 @@ func FetchGit(url, tag, destDir string) error {
 
 // FetchArchive downloads and extracts an archive to destDir.
 func FetchArchive(url, expectedSHA256, destDir string) error {
-	resp, err := http.Get(url)
-	if err != nil {
-		return fmt.Errorf("http get: %w", err)
-	}
-	defer resp.Body.Close()
+	return FetchArchiveWithOptions(url, expectedSHA256, destDir, FetchOptions{})
+}
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("http status: %s", resp.Status)
-	}
-
-	data, err := io.ReadAll(resp.Body)
+func FetchArchiveWithOptions(urlStr, expectedSHA256, destDir string, opts FetchOptions) error {
+	data, err := downloadArchive(urlStr, opts.Network)
 	if err != nil {
-		return fmt.Errorf("read body: %w", err)
+		return err
 	}
 
 	if expectedSHA256 != "" {
@@ -102,7 +108,7 @@ func FetchArchive(url, expectedSHA256, destDir string) error {
 	}
 	defer os.RemoveAll(tmpExtract)
 
-	lowerURL := strings.ToLower(url)
+	lowerURL := strings.ToLower(urlStr)
 	if strings.HasSuffix(lowerURL, ".zip") {
 		if err := extractZip(data, tmpExtract); err != nil {
 			return fmt.Errorf("extract zip: %w", err)
@@ -119,6 +125,80 @@ func FetchArchive(url, expectedSHA256, destDir string) error {
 	}
 
 	return stripComponentsAndMove(tmpExtract, destDir)
+}
+
+func downloadArchive(urlStr string, network *config.GlobalNetwork) ([]byte, error) {
+	client, err := archiveHTTPClient(network)
+	if err != nil {
+		return nil, err
+	}
+
+	attempts := 1
+	if network != nil && network.Retries > 1 {
+		attempts = network.Retries
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		resp, err := client.Get(urlStr)
+		if err != nil {
+			lastErr = fmt.Errorf("http get: %w", err)
+			continue
+		}
+
+		data, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = fmt.Errorf("read body: %w", readErr)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("http status: %s", resp.Status)
+			continue
+		}
+		return data, nil
+	}
+
+	return nil, lastErr
+}
+
+func archiveHTTPClient(network *config.GlobalNetwork) (*http.Client, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if network != nil && network.Proxy != "" {
+		proxyURL, err := url.Parse(network.Proxy)
+		if err != nil {
+			return nil, fmt.Errorf("parse proxy: %w", err)
+		}
+		transport.Proxy = func(req *http.Request) (*url.URL, error) {
+			if shouldBypassProxy(req.URL.Hostname(), network.NoProxy) {
+				return nil, nil
+			}
+			return proxyURL, nil
+		}
+	}
+
+	client := &http.Client{Transport: transport}
+	if network != nil && network.Timeout > 0 {
+		client.Timeout = time.Duration(network.Timeout) * time.Second
+	}
+	return client, nil
+}
+
+func shouldBypassProxy(host string, noProxy []string) bool {
+	host = strings.TrimSpace(strings.ToLower(host))
+	if host == "" {
+		return false
+	}
+	for _, pattern := range noProxy {
+		pattern = strings.TrimSpace(strings.ToLower(pattern))
+		if pattern == "" {
+			continue
+		}
+		if host == pattern || strings.HasSuffix(host, "."+pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func extractZip(data []byte, destDir string) error {

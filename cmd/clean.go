@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/all3n/cstow/internal/config"
 	"github.com/all3n/cstow/internal/workspace"
 	"github.com/spf13/cobra"
 )
@@ -63,16 +64,31 @@ func cleanProjectDir(dir string, removeLock bool) {
 }
 
 func cleanCache() {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: cannot determine home dir: %v\n", err)
-		return
-	}
-	cacheDir := filepath.Join(home, ".cstow", "cache")
-	dbPath := filepath.Join(home, ".cstow", "cstow.db")
+	cacheDir := ""
+	dbPath := ""
 
-	if v := os.Getenv("CSTOW_CACHE_DIR"); v != "" {
-		cacheDir = v
+	global, err := config.LoadGlobal()
+	if err == nil {
+		if resolved, err := config.ResolveCacheDir(global); err == nil && resolved != "" {
+			cacheDir = resolved
+		}
+		if resolved, err := config.ResolveArtifactDBPath(global); err == nil && resolved != "" {
+			dbPath = resolved
+		}
+	}
+
+	if cacheDir == "" || dbPath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: cannot determine home dir: %v\n", err)
+			return
+		}
+		if cacheDir == "" {
+			cacheDir = filepath.Join(home, ".cstow", "cache")
+		}
+		if dbPath == "" {
+			dbPath = filepath.Join(home, ".cstow", "cstow.db")
+		}
 	}
 
 	if _, err := os.Stat(cacheDir); err == nil {
@@ -94,7 +110,7 @@ func cleanCache() {
 
 func init() {
 	cleanCmd.Flags().Bool("lock", false, "also remove cstow.lock")
-	cleanCmd.Flags().Bool("cache", false, "also purge global cache (~/.cstow/cache)")
+	cleanCmd.Flags().Bool("cache", false, "also purge the resolved global cache directory and artifact db")
 	cleanCmd.Flags().Bool("all", false, "remove everything (lock + cache)")
 	rootCmd.AddCommand(cleanCmd)
 }

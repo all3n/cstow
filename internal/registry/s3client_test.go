@@ -5,10 +5,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/BurntSushi/toml"
 	"github.com/all3n/cstow/internal/config"
 	"github.com/stretchr/testify/assert"
@@ -318,4 +322,39 @@ aws_secret_access_key = shared-secret
 	require.NoError(t, err)
 	assert.Equal(t, "cfg-key", cfg.AccessKey)
 	assert.Equal(t, "cfg-secret", cfg.SecretKey)
+}
+
+func TestRegistryLoadOptionsIncludesRetryMaxAttempts(t *testing.T) {
+	opts, err := registryLoadOptions(&config.GlobalNetwork{Retries: 4})
+	require.NoError(t, err)
+
+	var loadOptions awsconfig.LoadOptions
+	for _, opt := range opts {
+		require.NoError(t, opt(&loadOptions))
+	}
+	assert.Equal(t, 4, loadOptions.RetryMaxAttempts)
+}
+
+func TestNewRegistryHTTPClientConfiguresTimeoutAndProxyBypass(t *testing.T) {
+	client, err := newRegistryHTTPClient(&config.GlobalNetwork{
+		Proxy:   "http://proxy.internal:8080",
+		NoProxy: []string{"localhost", "internal.example.com"},
+		Timeout: 3,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	assert.Equal(t, 3*time.Second, client.Timeout)
+
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.NotNil(t, transport.Proxy)
+
+	proxyURL, err := transport.Proxy(&http.Request{URL: &url.URL{Scheme: "https", Host: "service.example.com"}})
+	require.NoError(t, err)
+	require.NotNil(t, proxyURL)
+	assert.Equal(t, "http://proxy.internal:8080", proxyURL.String())
+
+	bypassURL, err := transport.Proxy(&http.Request{URL: &url.URL{Scheme: "https", Host: "localhost"}})
+	require.NoError(t, err)
+	assert.Nil(t, bypassURL)
 }

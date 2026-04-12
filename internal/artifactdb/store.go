@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/all3n/cstow/internal/config"
 	_ "modernc.org/sqlite"
 )
 
@@ -37,15 +38,19 @@ type SyncStats struct {
 }
 
 func OpenDefault() (*Store, error) {
-	home, err := os.UserHomeDir()
+	global, err := config.LoadGlobal()
 	if err != nil {
-		return nil, fmt.Errorf("home dir: %w", err)
+		return nil, fmt.Errorf("load global config: %w", err)
 	}
-	dir := filepath.Join(home, ".cstow")
+	dbPath, err := config.ResolveArtifactDBPath(global)
+	if err != nil {
+		return nil, fmt.Errorf("resolve artifact db path: %w", err)
+	}
+	dir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create %s: %w", dir, err)
 	}
-	return Open(filepath.Join(dir, "cstow.db"))
+	return Open(dbPath)
 }
 
 func Open(path string) (*Store, error) {

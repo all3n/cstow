@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -181,30 +180,7 @@ func isRegistryNotFoundError(err error) bool {
 }
 
 func resolveDoctorCacheDir(global *config.Global) (string, error) {
-	if v := os.Getenv("CSTOW_CACHE_DIR"); v != "" {
-		return v, nil
-	}
-	if global != nil && global.Cache.Dir != "" {
-		return expandDoctorPath(global.Cache.Dir)
-	}
-	return expandDoctorPath("~/.cstow/cache")
-}
-
-func expandDoctorPath(path string) (string, error) {
-	if path == "" {
-		return "", nil
-	}
-	if path == "~" || strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("home dir: %w", err)
-		}
-		if path == "~" {
-			return home, nil
-		}
-		return filepath.Join(home, path[2:]), nil
-	}
-	return path, nil
+	return config.ResolveCacheDir(global)
 }
 
 func splitLines(s string) []string {
