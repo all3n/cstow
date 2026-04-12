@@ -127,7 +127,9 @@
 - `cstow workspace list|fetch|build|gen|clean`
   - 支持成员枚举、统一抓取依赖、按依赖顺序构建、生成 CMake 文件和批量清理
 - `cstow doctor`
-  - 检查 CMake、编译器、缓存目录、artifact DB，以及 registry 基础连通性
+  - 检查 CMake、git/patch/tar/make/ninja/Autotools 工具、编译器、缓存目录、artifact DB，以及 registry 基础连通性
+- `cstow package add|lint`
+  - 支持生成 recipe 骨架，并在构建前做单包/整仓的基础 schema / patch / 版本覆盖静态检查
 
 ## 三、全局配置：`~/.cstow/config.toml`
 
@@ -206,22 +208,26 @@ retries = 5
   - 本地 artifact DB 会默认跟随 resolved cache 根的父目录，默认布局仍是 `~/.cstow/cstow.db`
 - `[build.flags]`
   - 现在会作为全局默认 flags 进入当前项目 `build` 路径，以及 repository / git source 的源码构建路径
+  - `gen` / `workspace gen` 现在也会复用这套默认值来生成 CMakeLists / Presets
   - 优先级上低于项目/recipe 自身 flags，适合作为团队级默认基线
 - `[network]`
-  - 当前已经接入 archive 类型源码下载，以及 registry 客户端构建
+  - 当前已经接入 archive 类型源码下载、registry 客户端构建，以及 git clone 路径
   - 已生效字段：`timeout_sec`、`retries`、`proxy`、`no_proxy`
-  - `git` 路径还没有完整复用这套配置
 
 ### 这些字段当前只解析或只部分保留
 
 - `repositories[].git`
+  - 当 `path` 为空时，主命令路径现在支持把它当作“托管的远程 recipe 仓库”克隆到本地状态目录再参与搜索
 - `repositories[].branch`
-- `repositories[].archive`
+  - 与 `repositories[].git` 搭配时生效；未设置时默认按 `main` 处理
 - `repositories[].auto_update`
+  - 对托管的 git recipe 仓库生效；开启后会在命令执行时刷新本地镜像
+- `repositories[].archive`
+  - 当 `path` 为空时，主命令路径现在支持把它当作“托管的远程 recipe 仓库”下载解包到本地状态目录再参与搜索
 - `[build.flags]`
-  - 主构建链路已消费，但 `gen` 等辅助面还没有完整复用这套全局默认值
+  - 主构建链路与 `gen` 辅助面已消费，但更外围的辅助面还没有完整复用
 - `[network]`
-  - archive 与 registry 主路径已消费，但 `git` 路径还没有完整接入
+  - 主抓取链路已消费，但 doctor/辅助命令等外围面还没有完整接入
 
 这些字段在配置结构里已存在，但 repository / install 主路径还没有完整消费。
 

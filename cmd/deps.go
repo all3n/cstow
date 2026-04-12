@@ -179,15 +179,15 @@ func (c *repositoryInstallContext) detectedABITag() string {
 	return abi.DetectFromToolchain(c.Toolchain.Kind, c.Toolchain.Version, c.Std).String()
 }
 
-func (c *repositoryInstallContext) repositoryPaths(projectRoot string) []string {
+func (c *repositoryInstallContext) repositoryPaths(projectRoot string) ([]string, error) {
 	if c == nil {
-		return nil
+		return nil, nil
 	}
-	var basePaths []string
-	if c.Global != nil {
-		basePaths = c.Global.RepositoryPaths(projectRoot)
+	basePaths, err := configuredRepositoryPaths(c.Global, projectRoot)
+	if err != nil {
+		return nil, err
 	}
-	return mergeRepositoryPaths(basePaths, c.ExtraRepos)
+	return mergeRepositoryPaths(basePaths, c.ExtraRepos), nil
 }
 
 func installFromRepository(name, versionConstraint string, opts repositoryInstallOptions) (*repositoryInstallResult, error) {
@@ -204,7 +204,10 @@ func installFromRepository(name, versionConstraint string, opts repositoryInstal
 		opts.trace = newRepositoryInstallTrace()
 	}
 
-	repoPaths := opts.Context.repositoryPaths(findProjectRoot())
+	repoPaths, err := opts.Context.repositoryPaths(findProjectRoot())
+	if err != nil {
+		return nil, fmt.Errorf("resolve repository paths: %w", err)
+	}
 	finder := repository.NewFinderWithPaths(repoPaths)
 	pkg, err := finder.Find(name, versionConstraint)
 	if err != nil {

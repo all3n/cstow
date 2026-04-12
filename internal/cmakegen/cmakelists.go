@@ -22,9 +22,11 @@ func GenerateCMakeLists(opts GenerateOptions) string {
 
 	// 3. Target definition based on type.
 	visibility := "PUBLIC"
+	usageScope := "PRIVATE"
 	switch opts.Type {
 	case "header-only":
 		visibility = "INTERFACE"
+		usageScope = "INTERFACE"
 		b.WriteString(fmt.Sprintf("add_library(%s INTERFACE)\n", opts.Name))
 	default:
 		// executable or library
@@ -45,8 +47,18 @@ func GenerateCMakeLists(opts GenerateOptions) string {
 
 	// 5. Compile definitions.
 	if len(opts.Defines) > 0 {
-		b.WriteString(fmt.Sprintf("target_compile_definitions(%s PRIVATE %s)\n",
-			opts.Name, strings.Join(opts.Defines, " ")))
+		b.WriteString(fmt.Sprintf("target_compile_definitions(%s %s %s)\n",
+			opts.Name, usageScope, strings.Join(opts.Defines, " ")))
+	}
+
+	if len(opts.CXXFlags) > 0 {
+		b.WriteString(fmt.Sprintf("target_compile_options(%s %s %s)\n",
+			opts.Name, usageScope, strings.Join(opts.CXXFlags, " ")))
+	}
+
+	if len(opts.LinkFlags) > 0 {
+		b.WriteString(fmt.Sprintf("target_link_options(%s %s %s)\n",
+			opts.Name, usageScope, strings.Join(opts.LinkFlags, " ")))
 	}
 
 	// 6. Dependencies: split into cmake-config deps and fallback deps.

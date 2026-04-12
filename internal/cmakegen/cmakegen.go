@@ -18,6 +18,8 @@ type GenerateOptions struct {
 	Sources   []string
 	Include   []string
 	Defines   []string
+	CXXFlags  []string
+	LinkFlags []string
 	Deps      []DepTarget
 	Profiles  map[string]config.Profile
 	Toolchain config.Toolchain

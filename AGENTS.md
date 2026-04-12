@@ -46,13 +46,14 @@ Use targeted package tests while iterating (`go test ./internal/registry/...`), 
 ## Code Map
 
 - `cmd/`
-  - Commands: `init`, `build`, `add`, `fetch`, `publish`, `install`, `migrate`, `ci`, `workspace`, `check-abi`, `artifact`, `search`, `gen`, `clean`, `doctor`
+  - Commands: `init`, `build`, `add`, `fetch`, `publish`, `install`, `migrate`, `ci`, `workspace`, `check-abi`, `artifact`, `search`, `gen`, `clean`, `doctor`, `package`
   - `fetch.go` — downloads prebuilt artifacts, uses manifest metadata for ABI/build_type matching, falls back to source builds (git or repository), and indexes outcomes in artifact DB.
   - `deps.go` — builds repository packages and git sources from source, and indexes results in artifact DB. Handles shared dependency propagation (`ForceShared` for `-fPIC`).
   - `workspace.go` — workspace init/add/list/fetch/build/gen/clean, including dependency-aware parallel scheduling.
   - `search.go` — searches repository paths for packages by name.
   - `gen.go` — generates `CMakeLists.txt` and `CMakePresets.json` for workspace projects.
-  - `doctor.go` — basic environment diagnostics for CMake, compiler, cache, artifact DB, and registry connectivity.
+  - `doctor.go` — basic environment diagnostics for build/source tools, compiler, cache, artifact DB, and registry connectivity.
+  - `package.go` — scaffolds repository recipes and lints package definitions before build-time failures.
   - `migrate.go` — basic CMake bootstrap into `cstow.toml`; still requires human review.
   - `ci.go` — basic GitHub Actions generator; currently Linux-first and not the final CI story.
   - `clean.go` — cleans build artifacts.
@@ -110,7 +111,8 @@ Follow the code as it exists today, not design docs. Key capabilities:
 - `fetch` supports manifest-based ABI/build_type matching, hash-based direct fetch (`--artifact`), and source-build fallback (git/archive/repository). Registry selection/hash/extract/download failures now include package/stage context, `--source-fallback=false` fails fast when no usable prebuilt artifact or registry configuration is available, fallback failures preserve both the prebuilt cause and the source-build cause, and fallback warnings/success lines use a consistent output style.
 - `install` supports git sources and repository recipes with recursive dependency resolution. Shared deps propagate `-fPIC` transitively, repository recursion now reports explicit dependency cycles, and source-build failures include package/stage context.
 - `publish` populates `hash_id` and `build_tags` metadata in manifests.
-- `doctor` checks CMake, compiler, cache directory, artifact DB, and registry basic connectivity.
+- `doctor` checks CMake, git/patch/tar/make/ninja/Autotools tools, compiler, cache directory, artifact DB, and registry basic connectivity.
+- `package lint` validates recipe structure, supported build/source modes, override files, referenced patch files, and supports whole-repository lint with warning/error separation.
 - `search` scans repository paths for packages by name.
 - `gen` generates `CMakeLists.txt` and `CMakePresets.json` for workspace projects.
 - Repository paths support project-level `.cstow/repository/` with highest priority.
@@ -123,7 +125,7 @@ Follow the code as it exists today, not design docs. Key capabilities:
 
 - Windows/MSVC and network-dependent end-to-end coverage is still partial; passing local Unix tests does not prove those paths are stable.
 - `~/.cstow/config.toml` `cache.dir` is now consumed consistently for cache-root operations, and the default artifact DB path follows the resolved cache root's parent directory.
-- Global config fields `repositories[].git|branch|archive|auto_update` are still not fully wired through the main install/fetch/build flows. Global `[network]` now covers archive-source HTTP downloads and registry client construction, and global `[build.flags]` covers the main source-build paths, but neither is wired through every auxiliary surface yet.
+- `repositories[].git|branch|auto_update|archive` now work for managed remote recipe repositories on the command path. Global `[network]` now covers archive-source HTTP downloads, registry client construction, and git clone execution; global `[build.flags]` covers the main source-build paths and `gen` surfaces; none of these are wired through every auxiliary surface yet.
 - `migrate`, `ci`, `gen`, and `doctor` should be treated as “basic usable” surfaces, not feature-complete product areas.
 
 

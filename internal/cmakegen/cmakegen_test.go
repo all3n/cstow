@@ -122,6 +122,20 @@ func TestGenerateCMakeLists_WithDefines(t *testing.T) {
 	assert.Contains(t, got, "target_compile_definitions(myapp PRIVATE MY_DEFINE=1 OTHER=2)")
 }
 
+func TestGenerateCMakeLists_WithCompileAndLinkFlags(t *testing.T) {
+	opts := GenerateOptions{
+		Name:      "myapp",
+		Type:      "executable",
+		Std:       "c++17",
+		CXXFlags:  []string{"-Wall", "-Wextra"},
+		LinkFlags: []string{"-lpthread", "-ldl"},
+	}
+	got := GenerateCMakeLists(opts)
+
+	assert.Contains(t, got, "target_compile_options(myapp PRIVATE -Wall -Wextra)")
+	assert.Contains(t, got, "target_link_options(myapp PRIVATE -lpthread -ldl)")
+}
+
 func TestGenerateCMakeLists_CMakeMinimumVersion(t *testing.T) {
 	opts := GenerateOptions{
 		Name: "myapp",

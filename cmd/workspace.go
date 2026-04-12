@@ -320,6 +320,10 @@ var workspaceGenCmd = &cobra.Command{
 		genCMakeLists, _ := cmd.Flags().GetBool("cmakelists")
 		genPresets, _ := cmd.Flags().GetBool("presets")
 		force, _ := cmd.Flags().GetBool("force")
+		global, err := config.LoadGlobal()
+		if err != nil {
+			return fmt.Errorf("load global config: %w", err)
+		}
 
 		order, err := ws.BuildOrder()
 		if err != nil {
@@ -346,21 +350,9 @@ var workspaceGenCmd = &cobra.Command{
 				deps, _ = cmakegen.DiscoverDeps(depsDir)
 			}
 
-			buildType := cfg.Build.Type
-			if buildType == "" {
-				buildType = "executable"
-			}
-
-			opts := cmakegen.GenerateOptions{
-				Name:      cfg.Package.Name,
-				Type:      buildType,
-				Std:       cfg.Package.Std,
-				Sources:   cfg.Build.Sources,
-				Include:   cfg.Build.Include,
-				Defines:   cfg.Build.Defines,
-				Deps:      deps,
-				Profiles:  cfg.Profiles,
-				Toolchain: cfg.Toolchain,
+			opts, err := generateOptionsFromConfig(cfg, global, deps)
+			if err != nil {
+				return fmt.Errorf("generate options for %s: %w", cfg.Package.Name, err)
 			}
 
 			if genCMakeLists {

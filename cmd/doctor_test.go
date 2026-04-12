@@ -91,6 +91,39 @@ func TestCheckRegistrySkipsMissingProjectConfig(t *testing.T) {
 	assert.NotContains(t, out.String(), "project config unreadable")
 }
 
+func TestCheckSourceBuildToolsReportsMixedAvailability(t *testing.T) {
+	prevLookPath := doctorLookPath
+	doctorLookPath = func(file string) (string, error) {
+		switch file {
+		case "git":
+			return "/usr/bin/git", nil
+		case "tar":
+			return "/usr/bin/tar", nil
+		case "ninja":
+			return "/usr/bin/ninja", nil
+		case "autoconf":
+			return "/usr/bin/autoconf", nil
+		case "automake":
+			return "/usr/bin/automake", nil
+		default:
+			return "", errors.New("not found")
+		}
+	}
+	t.Cleanup(func() { doctorLookPath = prevLookPath })
+
+	var out strings.Builder
+	checkSourceBuildTools(&out)
+	got := out.String()
+
+	assert.Contains(t, got, "[ ] Git: ✅ /usr/bin/git")
+	assert.Contains(t, got, "[ ] Patch: ⚠️  NOT FOUND")
+	assert.Contains(t, got, "[ ] Tar: ✅ /usr/bin/tar")
+	assert.Contains(t, got, "[ ] Make: ⚠️  NOT FOUND")
+	assert.Contains(t, got, "[ ] Ninja: ✅ /usr/bin/ninja")
+	assert.Contains(t, got, "[ ] Autotools: ⚠️  PARTIAL")
+	assert.Contains(t, got, "missing: autoreconf, libtoolize")
+}
+
 type fakeDoctorAPIError struct {
 	code    string
 	message string

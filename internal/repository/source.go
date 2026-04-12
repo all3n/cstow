@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -52,7 +53,7 @@ func FetchSourceWithOptions(srcDef SourceDef, ver *VersionOverride, version, exp
 			tagTemplate = ver.Source.URLTemplate
 		}
 		tag := ExpandTagTemplate(tagTemplate, version)
-		if err := FetchGit(url, tag, destDir); err != nil {
+		if err := FetchGitWithOptions(url, tag, destDir, opts); err != nil {
 			return "", fmt.Errorf("git fetch %s@%s: %w", url, tag, err)
 		}
 		return destDir, nil
@@ -76,9 +77,111 @@ func FetchSourceWithOptions(srcDef SourceDef, ver *VersionOverride, version, exp
 
 // FetchGit clones a repo and checks out the specified tag using a shallow clone.
 func FetchGit(url, tag, destDir string) error {
-	cmd := exec.Command("git", "clone", "--branch", tag, "--depth", "1", url, destDir)
+	return FetchGitWithOptions(url, tag, destDir, FetchOptions{})
+}
+
+func FetchGitWithOptions(urlStr, tag, destDir string, opts FetchOptions) error {
+	tag = defaultGitRef(tag)
+	attempts := 1
+	timeout := 0
+	var env []string
+	if opts.Network != nil {
+		if opts.Network.Retries > 1 {
+			attempts = opts.Network.Retries
+		}
+		timeout = opts.Network.Timeout
+		env = gitNetworkEnv(opts.Network)
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		_ = os.RemoveAll(destDir)
+
+		ctx := context.Background()
+		var cancel context.CancelFunc
+		if timeout > 0 {
+			ctx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+		}
+
+		cmd := exec.CommandContext(ctx, "git", "clone", "--branch", tag, "--depth", "1", urlStr, destDir)
+		if len(env) > 0 {
+			cmd.Env = append(os.Environ(), env...)
+		}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			if ctx.Err() != nil {
+				lastErr = fmt.Errorf("git clone timeout: %w", ctx.Err())
+			} else {
+				lastErr = fmt.Errorf("git clone failed: %s: %w", string(out), err)
+			}
+			if cancel != nil {
+				cancel()
+			}
+			continue
+		}
+		if cancel != nil {
+			cancel()
+		}
+		return nil
+	}
+	return lastErr
+}
+
+func SyncGitRepositoryWithOptions(urlStr, branch, destDir string, update bool, opts FetchOptions) error {
+	if _, err := os.Stat(filepath.Join(destDir, ".git")); err == nil {
+		if !update {
+			return nil
+		}
+		return UpdateGitRepositoryWithOptions(branch, destDir, opts)
+	}
+	_ = os.RemoveAll(destDir)
+	return FetchGitWithOptions(urlStr, branch, destDir, opts)
+}
+
+func SyncArchiveRepositoryWithOptions(urlStr, destDir string, update bool, opts FetchOptions) error {
+	if _, err := os.Stat(destDir); err == nil && !update {
+		return nil
+	}
+	_ = os.RemoveAll(destDir)
+	return FetchArchiveWithOptions(urlStr, "", destDir, opts)
+}
+
+func UpdateGitRepositoryWithOptions(branch, destDir string, opts FetchOptions) error {
+	branch = defaultGitRef(branch)
+	if err := runGitCommandWithOptions([]string{"-C", destDir, "fetch", "--depth", "1", "origin", branch}, opts); err != nil {
+		return fmt.Errorf("git fetch %s: %w", branch, err)
+	}
+	if err := runGitCommandWithOptions([]string{"-C", destDir, "reset", "--hard", "FETCH_HEAD"}, opts); err != nil {
+		return fmt.Errorf("git reset %s: %w", branch, err)
+	}
+	return nil
+}
+
+func runGitCommandWithOptions(args []string, opts FetchOptions) error {
+	timeout := 0
+	var env []string
+	if opts.Network != nil {
+		timeout = opts.Network.Timeout
+		env = gitNetworkEnv(opts.Network)
+	}
+
+	ctx := context.Background()
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	}
+	if cancel != nil {
+		defer cancel()
+	}
+
+	cmd := exec.CommandContext(ctx, "git", args...)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git clone failed: %s: %w", string(out), err)
+		if ctx.Err() != nil {
+			return fmt.Errorf("git timeout: %w", ctx.Err())
+		}
+		return fmt.Errorf("%s: %w", string(out), err)
 	}
 	return nil
 }
@@ -199,6 +302,40 @@ func shouldBypassProxy(host string, noProxy []string) bool {
 		}
 	}
 	return false
+}
+
+func gitNetworkEnv(network *config.GlobalNetwork) []string {
+	if network == nil || network.Proxy == "" {
+		if network == nil || len(network.NoProxy) == 0 {
+			return nil
+		}
+		return []string{
+			"NO_PROXY=" + strings.Join(network.NoProxy, ","),
+			"no_proxy=" + strings.Join(network.NoProxy, ","),
+		}
+	}
+
+	env := []string{
+		"HTTP_PROXY=" + network.Proxy,
+		"HTTPS_PROXY=" + network.Proxy,
+		"http_proxy=" + network.Proxy,
+		"https_proxy=" + network.Proxy,
+	}
+	if len(network.NoProxy) > 0 {
+		joined := strings.Join(network.NoProxy, ",")
+		env = append(env,
+			"NO_PROXY="+joined,
+			"no_proxy="+joined,
+		)
+	}
+	return env
+}
+
+func defaultGitRef(ref string) string {
+	if strings.TrimSpace(ref) == "" {
+		return "main"
+	}
+	return ref
 }
 
 func extractZip(data []byte, destDir string) error {

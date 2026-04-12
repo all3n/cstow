@@ -14,7 +14,7 @@
 ### 1. 已验证事实
 
 - `go test ./...` 在当前 Unix-like 环境下通过
-- CLI 主命令已存在并可调用：`init`、`build`、`add`、`fetch`、`publish`、`install`、`migrate`、`ci`、`workspace`、`check-abi`、`artifact`、`search`、`gen`、`clean`、`doctor`
+- CLI 主命令已存在并可调用：`init`、`build`、`add`、`fetch`、`publish`、`install`、`migrate`、`ci`、`workspace`、`check-abi`、`artifact`、`search`、`gen`、`clean`、`doctor`、`package`
 - 三条主依赖路径已经连通：
   - registry 预编译分发
   - repository recipe 源码构建
@@ -37,7 +37,8 @@
 - `artifact` 已基于 SQLite 建立本地索引，并支持 `sync/show/prune`
 - `workspace` 已支持成员发现、依赖排序、并行构建、统一 fetch
 - `gen` / `workspace gen` 已能从 `cstow.toml` 生成基础 CMake 文件
-- `doctor` 已检查 CMake、编译器、缓存目录、artifact DB、registry 基础连通性
+- `doctor` 已检查 CMake、git/patch/tar/make/ninja/Autotools 工具、编译器、缓存目录、artifact DB、registry 基础连通性
+- `package lint` 已能对 recipe 做基础静态检查，支持单包/整仓 lint，并区分 error / warning
 - `internal/builder/` 已支持 CMake 和 Autotools，支持 patch、debug/shared 产物校验
 - `internal/repository/source.go` 已支持 `git` 和 `archive`（`.tar.gz`、`.zip`）
 
@@ -67,9 +68,9 @@
 ### P1. 配置模型与实现存在漂移
 
 - `~/.cstow/config.toml` 的 `cache.dir` 现在已经统一接入 resolver / fetch / artifact sync / doctor / clean，artifact DB 默认路径也会跟随 resolved cache 根的父目录
-- `repositories[].git` / `branch` / `archive` / `auto_update` 仍属于“已解析但未真正进入主流程”的字段
-- 全局 `[network]` 已接入 archive 源码下载和 registry 客户端构建；`git` 路径还没有完整复用
-- 全局 `[build.flags]` 已接入 build / install / fetch 的源码构建主链路，但 `gen` 等辅助面还没有完整复用
+- `repositories[].git` / `branch` / `auto_update` 已接入托管的远程 recipe 仓库路径；`repositories[].archive` 也已接入托管的远程 recipe 仓库下载路径
+- 全局 `[network]` 已接入 archive 源码下载、registry 客户端构建和 git clone 路径；剩下主要是外围辅助面还没统一
+- 全局 `[build.flags]` 已接入 build / install / fetch 的源码构建主链路，以及 `gen` / `workspace gen`
 
 ### P1. 辅助命令还是基础版，不该被写成“已完成产品”
 
@@ -78,13 +79,8 @@
   - `FetchContent URL` 场景处理还比较粗
   - 生成结果仍需要人工复核
 - `gen` / `workspace gen` 生成的是基础 CMake 模板，不等于“各种项目形态都验证过”
-- `doctor` 当前覆盖的是基础环境诊断，还没有检查：
-  - `git`
-  - `patch`
-  - `tar`
-  - `make` / `ninja`
-  - Autotools 所需工具
-- 目前还没有 package authoring / lint 命令，把 recipe 编写错误前移暴露
+- `doctor` 当前已经覆盖源码抓取和常见构建工具检查，但还没有给出更细粒度的修复建议或按后端分层诊断
+- `package lint` 已具备单包/整仓 lint 和基础 warning 分级，但还没有做到更细粒度的 authoring 体验，比如自动修复提示
 
 ### P2. 文档与示例还需要追上代码
 

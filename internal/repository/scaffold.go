@@ -24,18 +24,18 @@ func ScaffoldPackage(repoDir, pkgName string) error {
 
 	template := fmt.Sprintf(`# cstow package definition: %s
 
+versions = ["0.1.0"]
+
 [package]
 name = "%s"
 description = ""
 homepage = ""
 license = ""
 
-versions = ["0.1.0"]
-
 [source]
 # type: git | archive
 type = "git"
-url = ""
+url = "https://example.com/%s.git"
 # for git:
 tag_template = "v{version}"
 # for archive:
@@ -47,13 +47,13 @@ system = "cmake"
 # type: static | shared | header-only
 type = "static"
 
-[build.options]
+[build.cmake]
 # BUILD_SHARED_LIBS = "ON"
 
 [artifacts]
 include_dirs = ["include"]
 # install_targets = ["lib/lib%s.a"]
-`, pkgName, pkgName, pkgName, pkgName)
+`, pkgName, pkgName, pkgName, pkgName, pkgName)
 
 	if err := os.WriteFile(pkgFile, []byte(template), 0o644); err != nil {
 		return fmt.Errorf("write package.toml template: %w", err)

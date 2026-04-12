@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/all3n/cstow/internal/artifactdb"
 	"github.com/stretchr/testify/assert"
@@ -27,6 +29,15 @@ func TestInstallAbseilCppFromRepository(t *testing.T) {
 	// Check for network connectivity (Abseil is large, better to skip if no internet)
 	if err := exec.Command("git", "ls-remote", "https://github.com/abseil/abseil-cpp.git", "HEAD").Run(); err != nil {
 		t.Skip("Abseil-cpp repository unreachable, skipping test")
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Head("https://github.com/abseil/abseil-cpp/archive/refs/tags/20260107.1.tar.gz")
+	if err != nil {
+		t.Skip("Abseil-cpp archive unreachable, skipping test")
+	}
+	resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		t.Skipf("Abseil-cpp archive returned status %d, skipping test", resp.StatusCode)
 	}
 
 	fakeHome := t.TempDir()

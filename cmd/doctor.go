@@ -27,6 +27,8 @@ var doctorOpenStore = func() (doctorArtifactStore, error) {
 	return artifactdb.OpenDefault()
 }
 
+var doctorLookPath = exec.LookPath
+
 var doctorNewRegistryClient = func(ctx context.Context, reg config.Registry) (*registry.S3Client, error) {
 	return registry.NewS3Client(ctx, reg)
 }
@@ -41,13 +43,16 @@ var doctorCmd = &cobra.Command{
 		// 1. Check CMake
 		checkCMake(out)
 
-		// 2. Check Toolchain
+		// 2. Check source/build tools
+		checkSourceBuildTools(out)
+
+		// 3. Check Toolchain
 		checkToolchain(out)
 
-		// 3. Check Cache & DB
+		// 4. Check Cache & DB
 		checkStorage(out)
 
-		// 4. Check Registry
+		// 5. Check Registry
 		checkRegistry(out)
 
 		fmt.Fprintln(out, "\n>> doctor check complete.")
@@ -57,7 +62,7 @@ var doctorCmd = &cobra.Command{
 
 func checkCMake(w io.Writer) {
 	fmt.Fprint(w, "[ ] CMake: ")
-	path, err := exec.LookPath("cmake")
+	path, err := doctorLookPath("cmake")
 	if err != nil {
 		fmt.Fprintln(w, "❌ NOT FOUND. Please install CMake.")
 		return
@@ -73,6 +78,52 @@ func checkCMake(w io.Writer) {
 		version = lines[0]
 	}
 	fmt.Fprintf(w, "✅ %s (%s)\n", version, path)
+}
+
+func checkSourceBuildTools(w io.Writer) {
+	checkDoctorTool(w, "Git", "git", true)
+	checkDoctorTool(w, "Patch", "patch", false)
+	checkDoctorTool(w, "Tar", "tar", false)
+	checkDoctorTool(w, "Make", "make", false)
+	checkDoctorTool(w, "Ninja", "ninja", false)
+	checkAutotoolsTools(w)
+}
+
+func checkDoctorTool(w io.Writer, label, binary string, required bool) {
+	fmt.Fprintf(w, "[ ] %s: ", label)
+	path, err := doctorLookPath(binary)
+	if err != nil {
+		if required {
+			fmt.Fprintln(w, "❌ NOT FOUND")
+		} else {
+			fmt.Fprintln(w, "⚠️  NOT FOUND")
+		}
+		return
+	}
+	fmt.Fprintf(w, "✅ %s\n", path)
+}
+
+func checkAutotoolsTools(w io.Writer) {
+	fmt.Fprint(w, "[ ] Autotools: ")
+	tools := []string{"autoconf", "automake", "autoreconf", "libtoolize"}
+	var found []string
+	var missing []string
+	for _, tool := range tools {
+		if _, err := doctorLookPath(tool); err != nil {
+			missing = append(missing, tool)
+			continue
+		}
+		found = append(found, tool)
+	}
+
+	switch {
+	case len(missing) == 0:
+		fmt.Fprintf(w, "✅ %s\n", strings.Join(found, ", "))
+	case len(found) == 0:
+		fmt.Fprintf(w, "⚠️  NOT FOUND (missing: %s)\n", strings.Join(missing, ", "))
+	default:
+		fmt.Fprintf(w, "⚠️  PARTIAL (found: %s; missing: %s)\n", strings.Join(found, ", "), strings.Join(missing, ", "))
+	}
 }
 
 func checkToolchain(w io.Writer) {
